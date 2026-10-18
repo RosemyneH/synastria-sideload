@@ -21,9 +21,10 @@ constexpr uint16_t kLoginVerifyWorld = 0x236;
 constexpr int kLuaGlobals = -10002;
 constexpr uint8_t kCharacterCap = 20;
 constexpr char kLoginGuard[] =
-    "if SynastriaLoginPatch then return end\n"
+    "if SynastriaLoginPatch or SynastriaLoginStarted then return end\n"
     "if type(UpdateCharacterList) ~= \"function\" or type(CharacterClass_OnClick) ~= \"function\" then return end\n"
     "if not _G[\"CharacterSelectCharacterFrame\"] or not _G[\"CharSelectCharacterButton10\"] then return end\n"
+    "SynastriaLoginStarted = true\n"
     "local ok, err = pcall(function()\n";
 
 constexpr char kLoginTail[] =
@@ -82,8 +83,7 @@ constexpr char kLoginFooter[] =
     "    return name, race, class, level, zone, sex, ghost, pcc, prc, pfc\n"
     "  end\n"
     "end\n"
-    "SynastriaPlaceCreate()\n"
-    "if type(UpdateCharacterList) == \"function\" then UpdateCharacterList() end\n";
+    "SynastriaPlaceCreate()\n";
 
 constexpr char kCreateButtonLua[] =
     "MAX_CHARACTERS_PER_REALM = 20\n"
@@ -126,8 +126,7 @@ constexpr char kCreateButtonLua[] =
     "    return result\n"
     "  end\n"
     "end\n"
-    "place()\n"
-    "if type(UpdateCharacterList) == \"function\" then UpdateCharacterList() end\n";
+    "place()\n";
 
 constexpr uint8_t kPrologue[] = {
     0x41, 0x56,
@@ -200,6 +199,7 @@ bool g_announced = false;
 bool g_create_ready = false;
 bool g_lua_ready = false;
 bool g_login_error_logged = false;
+void* g_seen_lua = nullptr;
 int g_depth = 0;
 int g_main_depth = 0;
 
@@ -510,10 +510,19 @@ void ensure_lua() {
                 g_lua_settop(state, -2);
             }
         }
+        int started = 0;
+        if (!applied && g_lua_getfield && g_lua_toboolean && g_lua_settop) {
+            g_lua_getfield(state, kLuaGlobals, "SynastriaLoginStarted");
+            started = g_lua_toboolean(state, -1);
+            g_lua_settop(state, -2);
+        }
         if (applied) {
             g_lua_ready = true;
             log_line("login patch applied from WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
             log_stderr("synastria: login patch applied");
+        } else if (started) {
+            g_lua_ready = true;
+            log_line("login patch stopped after one attempt");
         }
     }
 
@@ -649,6 +658,19 @@ void pump_main(bool in_game) {
         return;
     }
     g_main_depth++;
+    if (g_lua_context) {
+        void* state = g_lua_context();
+        if (state && state != g_seen_lua) {
+            if (g_seen_lua) {
+                log_line("lua state reset, reinstalling synastria ui");
+                g_lua_ready = false;
+                g_create_ready = false;
+                g_login_error_logged = false;
+                syn_features_reset();
+            }
+            g_seen_lua = state;
+        }
+    }
     syn_features_before();
     syn_features_harvest();
     ensure_lua();

@@ -701,6 +701,11 @@ void run_scripts() {
     if (g_scripts_ready || !g_exec) {
         return;
     }
+    if (g_scripts.empty()) {
+        log_line("container scripts were empty");
+        g_scripts_ready = true;
+        return;
+    }
     for (const std::string& source : g_scripts) {
         g_exec(source.c_str(), "WoWExt.bin", "synastria");
     }
@@ -858,6 +863,13 @@ void syn_features_before() {
         return;
     }
     register_natives();
+}
+
+void syn_features_reset() {
+    g_natives_ready = false;
+    g_scripts_ready = false;
+    g_classes_ready = false;
+    g_script_wait = 0;
 }
 
 void syn_features_world() {
