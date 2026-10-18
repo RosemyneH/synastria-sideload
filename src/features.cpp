@@ -48,6 +48,14 @@ bool g_in_world = false;
 int g_script_wait = 0;
 
 std::vector<std::string> g_scripts;
+
+struct CacheRecord {
+    uint32_t id;
+    uint32_t size;
+    uint8_t md5[16];
+};
+
+std::vector<CacheRecord> g_cache_records;
 std::vector<std::string> g_item_name_list;
 std::vector<std::string> g_obj_names;
 std::vector<std::string> g_itemloc_names;
@@ -745,10 +753,15 @@ void load_container(const char* path) {
         if (!read_u32(data.data(), data.size(), offset, id) || offset + 16 + 4 > data.size()) {
             break;
         }
+        CacheRecord record{};
+        record.id = id;
+        memcpy(record.md5, data.data() + offset, 16);
         offset += 16;
         if (!read_u32(data.data(), data.size(), offset, data_size) || offset + data_size > data.size()) {
             break;
         }
+        record.size = data_size;
+        g_cache_records.push_back(record);
         const uint8_t* payload = data.data() + offset;
         offset += data_size;
         if (data_size == 0) {
@@ -868,4 +881,44 @@ void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size) {
     if (cmd == 14 && rest) {
         adopt_classes(rest, size);
     }
+}
+
+int syn_features_cache_missing(const uint8_t* rest, uint32_t size, uint32_t* missing, int cap) {
+    if (!rest || size < 5 || rest[0] != 0 || !missing || cap <= 0) {
+        return -1;
+    }
+    uint32_t count = 0;
+    memcpy(&count, rest + 1, 4);
+    if (count > 0x1000 || 5u + count * 24u > size) {
+        log_line("container sync rejected count=%u size=%u", count, size);
+        return -1;
+    }
+    int need = 0;
+    int matched = 0;
+    const uint8_t* cursor = rest + 5;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t id = 0;
+        uint32_t bytes = 0;
+        memcpy(&id, cursor, 4);
+        memcpy(&bytes, cursor + 4, 4);
+        const uint8_t* md5 = cursor + 8;
+        cursor += 24;
+        const CacheRecord* found = nullptr;
+        for (const CacheRecord& record : g_cache_records) {
+            if (record.id == id) {
+                found = &record;
+                break;
+            }
+        }
+        if (found && found->size == bytes && memcmp(found->md5, md5, 16) == 0) {
+            ++matched;
+            continue;
+        }
+        if (need < cap) {
+            missing[need] = id;
+        }
+        ++need;
+    }
+    log_line("container sync server=%u local=%zu matched=%d missing=%d", count, g_cache_records.size(), matched, need);
+    return need < cap ? need : cap;
 }

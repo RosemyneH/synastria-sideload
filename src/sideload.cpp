@@ -329,6 +329,29 @@ void send_presence() {
     log_stderr("synastria: announced extension");
 }
 
+void send_cache_reply(const uint32_t* ids, int count) {
+    if (!can_send() || count < 0) {
+        return;
+    }
+    alignas(16) unsigned char raw[64];
+    memset(raw, 0, sizeof(raw));
+    g_ctor(raw);
+    g_put_u32(raw, static_cast<uint32_t>(kOpcode));
+    g_put_u8(raw, 3);
+    g_put_u32(raw, static_cast<uint32_t>(count));
+    for (int i = 0; i < count; ++i) {
+        g_put_u32(raw, ids[i]);
+    }
+    g_finalize(raw);
+    if (g_net_send && g_net) {
+        g_net_send(g_net, raw);
+    } else if (g_send) {
+        g_send(raw);
+    }
+    g_dtor(raw);
+    log_line("container sync reply count=%d", count);
+}
+
 uint16_t peek_opcode(void* msg) {
     auto* store = static_cast<StoreView*>(msg);
     if (!store || !store->data || store->size < 2) {
@@ -371,7 +394,13 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
     syn_features_packet(cmd, rest, left);
     log_line("pkt opcode=%#x cmd=%u token=%u rest=%u %s", msg_id, cmd, g_token, left, hex);
 
-    if (cmd == 2 && rest && left >= 1 && g_token == 0 && rest[0] != 0) {
+    if (cmd == 2 && rest && left >= 1 && rest[0] == 0) {
+        uint32_t missing[256];
+        int count = syn_features_cache_missing(rest, left, missing, 256);
+        if (count >= 0) {
+            send_cache_reply(missing, count);
+        }
+    } else if (cmd == 2 && rest && left >= 1 && g_token == 0 && rest[0] != 0) {
         g_token = rest[0];
         log_line("token set to %u", g_token);
     }
