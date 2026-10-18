@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -21,8 +22,17 @@ constexpr int kLuaGlobals = -10002;
 constexpr uint8_t kCharacterCap = 20;
 constexpr char kLoginGuard[] =
     "if SynastriaLoginPatch then return end\n"
-    "if not _G[\"CharacterSelectCharacterFrame\"] then return end\n"
-    "SynastriaLoginPatch = true\n";
+    "if type(UpdateCharacterList) ~= \"function\" or type(CharacterClass_OnClick) ~= \"function\" then return end\n"
+    "if not _G[\"CharacterSelectCharacterFrame\"] or not _G[\"CharSelectCharacterButton10\"] then return end\n"
+    "local ok, err = pcall(function()\n";
+
+constexpr char kLoginTail[] =
+    "\nend)\n"
+    "if _G[\"CharSelectCharacterButton11\"] and orig_CharacterClass_OnClick then\n"
+    "  SynastriaLoginPatch = true\n"
+    "elseif not ok then\n"
+    "  SynastriaLoginError = tostring(err)\n"
+    "end\n";
 
 // ʕ •ᴥ•ʔ✿ Glue hides Create when count >= 10, then pins it under slot 14, off the frame. ✿ ʕ •ᴥ•ʔ
 constexpr char kLoginFooter[] =
@@ -104,7 +114,8 @@ constexpr char kCreateButtonLua[] =
     "    return result\n"
     "  end\n"
     "end\n"
-    "place()\n";
+    "place()\n"
+    "if type(UpdateCharacterList) == \"function\" then UpdateCharacterList() end\n";
 
 constexpr uint8_t kPrologue[] = {
     0x41, 0x56,
@@ -117,6 +128,7 @@ constexpr uint8_t kPrologue[] = {
 };
 
 using ProcessFn = int (*)(void*, uint32_t, void*, int);
+using IdleFn = int (*)(const void*, void*);
 using SetHandlerFn = void (*)(int, int (*)(void*, int, unsigned, void*), void*);
 using NetSetHandlerFn = void (*)(void*, int, int (*)(void*, int, unsigned, void*), void*);
 using NetSendFn = void (*)(void*, void*);
@@ -158,7 +170,11 @@ ExecuteFn g_lua_execute = nullptr;
 LuaGetFieldFn g_lua_getfield = nullptr;
 LuaToBooleanFn g_lua_toboolean = nullptr;
 LuaSetTopFn g_lua_settop = nullptr;
+using LuaToStringFn = const char* (*)(void*, int, size_t*);
+LuaToStringFn g_lua_tolstring = nullptr;
 char* g_login_lua = nullptr;
+IdleFn g_glue_idle = nullptr;
+IdleFn g_game_idle = nullptr;
 int g_lua_tries = 0;
 void** g_connection = nullptr;
 ProcessFn g_process = nullptr;
@@ -170,7 +186,9 @@ bool g_handler_ready = false;
 bool g_announced = false;
 bool g_create_ready = false;
 bool g_lua_ready = false;
+bool g_login_error_logged = false;
 int g_depth = 0;
+int g_main_depth = 0;
 
 void log_line(const char* fmt, ...) {
     if (!g_log) {
@@ -201,6 +219,34 @@ void write_abs_jmp(uint8_t* at, void* dest) {
     memcpy(at + 6, &dest, sizeof(dest));
 }
 
+void* detour(void* target, size_t steal, void* hook, const char* label) {
+    auto* code = static_cast<uint8_t*>(target);
+    long page = sysconf(_SC_PAGESIZE);
+    uintptr_t start = reinterpret_cast<uintptr_t>(code);
+    uintptr_t page_start = start & ~(static_cast<uintptr_t>(page) - 1);
+    size_t span = static_cast<size_t>(page) * 2;
+    if (mprotect(reinterpret_cast<void*>(page_start), span, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        log_line("mprotect failed for %s", label);
+        return nullptr;
+    }
+
+    uint8_t* tramp = static_cast<uint8_t*>(mmap(nullptr, static_cast<size_t>(page), PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (tramp == MAP_FAILED) {
+        return nullptr;
+    }
+    memcpy(tramp, code, steal);
+    write_abs_jmp(tramp + steal, code + steal);
+
+    uint8_t patch[32];
+    memset(patch, 0x90, steal);
+    write_abs_jmp(patch, hook);
+    memcpy(code, patch, steal);
+    mprotect(reinterpret_cast<void*>(page_start), span, PROT_READ | PROT_EXEC);
+    log_line("hooked %s at %p", label, target);
+    return tramp;
+}
+
 bool patch_process(void* target) {
     auto* code = static_cast<uint8_t*>(target);
     if (memcmp(code, kPrologue, sizeof(kPrologue)) != 0) {
@@ -213,30 +259,11 @@ bool patch_process(void* target) {
         log_stderr("synastria: prologue mismatch, sideload hook not installed");
         return false;
     }
-
-    long page = sysconf(_SC_PAGESIZE);
-    uintptr_t start = reinterpret_cast<uintptr_t>(code);
-    uintptr_t page_start = start & ~(static_cast<uintptr_t>(page) - 1);
-    size_t span = (start + sizeof(kPrologue)) - page_start;
-    if (mprotect(reinterpret_cast<void*>(page_start), span, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        log_line("mprotect failed");
+    void* tramp = detour(target, sizeof(kPrologue), reinterpret_cast<void*>(hook_process), "NetClient::ProcessMessage");
+    if (!tramp) {
         return false;
     }
-
-    uint8_t* tramp = static_cast<uint8_t*>(mmap(nullptr, static_cast<size_t>(page), PROT_READ | PROT_WRITE | PROT_EXEC,
-                                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-    if (tramp == MAP_FAILED) {
-        return false;
-    }
-    memcpy(tramp, code, sizeof(kPrologue));
-    write_abs_jmp(tramp + sizeof(kPrologue), code + sizeof(kPrologue));
     g_process = reinterpret_cast<ProcessFn>(tramp);
-
-    uint8_t patch[sizeof(kPrologue)];
-    memset(patch, 0x90, sizeof(patch));
-    write_abs_jmp(patch, reinterpret_cast<void*>(hook_process));
-    memcpy(code, patch, sizeof(patch));
-    mprotect(reinterpret_cast<void*>(page_start), span, PROT_READ | PROT_EXEC);
     return true;
 }
 
@@ -393,16 +420,25 @@ void prepare_login_lua() {
     if (!g_cache.lua) {
         return;
     }
-    size_t guard = sizeof(kLoginGuard) - 1;
-    size_t footer = sizeof(kLoginFooter) - 1;
-    g_login_lua = static_cast<char*>(malloc(guard + g_cache.lua_bytes + footer + 1));
-    if (!g_login_lua) {
-        return;
+    std::string body(g_cache.lua, g_cache.lua + g_cache.lua_bytes);
+    const char* slots[] = {
+        "CharSelectCharacterButton",
+        "CharSelectCharacterCustomize",
+        "CharSelectRaceChange",
+        "CharSelectFactionChange",
+    };
+    for (const char* name : slots) {
+        std::string from = std::string("CreateFrame(\"Button\", \"") + name + "\" .. i";
+        std::string to = std::string("_G[\"") + name + R"(" .. i] or CreateFrame("Button", ")" + name + R"(" .. i)";
+        size_t pos = body.find(from);
+        if (pos == std::string::npos) {
+            log_line("login lua missing create for %s", name);
+            continue;
+        }
+        body.replace(pos, from.size(), to);
     }
-    memcpy(g_login_lua, kLoginGuard, guard);
-    memcpy(g_login_lua + guard, g_cache.lua, g_cache.lua_bytes);
-    memcpy(g_login_lua + guard + g_cache.lua_bytes, kLoginFooter, footer);
-    g_login_lua[guard + g_cache.lua_bytes + footer] = 0;
+    std::string script = std::string(kLoginGuard) + body + kLoginFooter + kLoginTail;
+    g_login_lua = strdup(script.c_str());
 }
 
 void ensure_lua() {
@@ -414,43 +450,47 @@ void ensure_lua() {
         return;
     }
 
-    if (!g_create_ready) {
-        g_lua_execute(kCreateButtonLua, "SynastriaCreate.lua", "synastria");
-        if (g_lua_getfield && g_lua_toboolean && g_lua_settop) {
-            g_lua_getfield(state, kLuaGlobals, "SynastriaCreateHook");
-            g_create_ready = g_lua_toboolean(state, -1) != 0;
-            g_lua_settop(state, -2);
+    if (!g_lua_ready && g_login_lua) {
+        if (g_lua_tries++ > 200) {
+            g_lua_ready = true;
+            log_line("login patch gave up waiting for CharacterSelect");
+        } else {
+            g_lua_execute(g_login_lua, "WoWExt3.bin", "synastria");
+            int applied = 0;
+            if (g_lua_getfield && g_lua_toboolean && g_lua_settop) {
+                g_lua_getfield(state, kLuaGlobals, "SynastriaLoginPatch");
+                applied = g_lua_toboolean(state, -1);
+                g_lua_settop(state, -2);
+                if (!applied && g_lua_tolstring && !g_login_error_logged) {
+                    g_lua_getfield(state, kLuaGlobals, "SynastriaLoginError");
+                    const char* err = g_lua_tolstring(state, -1, nullptr);
+                    if (err && err[0]) {
+                        log_line("login patch error: %s", err);
+                        g_login_error_logged = true;
+                    }
+                    g_lua_settop(state, -2);
+                }
+            }
+            if (applied) {
+                g_lua_ready = true;
+                log_line("login patch applied from WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
+                log_stderr("synastria: login patch applied");
+            }
         }
-        if (g_create_ready) {
-            log_line("create character button kept for accounts under 20");
-        }
     }
 
-    if (g_lua_ready || !g_login_lua) {
+    if (!g_lua_ready || g_create_ready) {
         return;
     }
-    if (g_lua_tries++ > 200) {
-        g_lua_ready = true;
-        log_line("login patch gave up waiting for CharacterSelect");
-        return;
+    g_lua_execute(kCreateButtonLua, "SynastriaCreate.lua", "synastria");
+    if (g_lua_getfield && g_lua_toboolean && g_lua_settop) {
+        g_lua_getfield(state, kLuaGlobals, "SynastriaCreateHook");
+        g_create_ready = g_lua_toboolean(state, -1) != 0;
+        g_lua_settop(state, -2);
     }
-
-    g_lua_execute(g_login_lua, "WoWExt3.bin", "synastria");
-    if (!g_lua_getfield || !g_lua_toboolean || !g_lua_settop) {
-        g_lua_ready = true;
-        log_line("executed WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
-        return;
+    if (g_create_ready) {
+        log_line("create character button kept for accounts under 20");
     }
-
-    g_lua_getfield(state, kLuaGlobals, "SynastriaLoginPatch");
-    int applied = g_lua_toboolean(state, -1);
-    g_lua_settop(state, -2);
-    if (!applied) {
-        return;
-    }
-    g_lua_ready = true;
-    log_line("login patch applied from WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
-    log_stderr("synastria: login patch applied");
 }
 
 int hook_process(void* self, uint32_t time, void* msg, int unused) {
@@ -460,17 +500,13 @@ int hook_process(void* self, uint32_t time, void* msg, int unused) {
     }
     if (g_depth++ == 0) {
         ensure_handler(self);
-        syn_features_before();
         if (peek_opcode(msg) == kLoginVerifyWorld) {
             syn_features_world();
             send_presence();
         }
-        ensure_lua();
     }
     int result = g_process(self, time, msg, unused);
-    if (--g_depth == 0) {
-        syn_features_after();
-    }
+    --g_depth;
     return result;
 }
 
@@ -503,7 +539,65 @@ bool resolve_all() {
         && bind_symbol("_Z19FrameScript_ExecutePKcS0_S0_", reinterpret_cast<void**>(&g_lua_execute))
         && bind_symbol("lua_getfield", reinterpret_cast<void**>(&g_lua_getfield))
         && bind_symbol("lua_toboolean", reinterpret_cast<void**>(&g_lua_toboolean))
-        && bind_symbol("lua_settop", reinterpret_cast<void**>(&g_lua_settop));
+        && bind_symbol("lua_settop", reinterpret_cast<void**>(&g_lua_settop))
+        && bind_symbol("lua_tolstring", reinterpret_cast<void**>(&g_lua_tolstring));
+}
+
+constexpr uint8_t kGlueIdle[] = {
+    0x48, 0x81, 0xec, 0xc8, 0x03, 0x00, 0x00,
+    0x48, 0x89, 0x9c, 0x24, 0xa0, 0x03, 0x00, 0x00,
+};
+constexpr uint8_t kGameIdle[] = {
+    0x48, 0x81, 0xec, 0xf8, 0x0b, 0x00, 0x00,
+    0x4c, 0x89, 0xb4, 0x24, 0xe8, 0x0b, 0x00, 0x00,
+};
+
+void pump_main(bool in_game) {
+    static int seen_glue = 0;
+    static int seen_game = 0;
+    if (in_game) {
+        if (seen_game++ == 0) {
+            log_line("game idle entered");
+        }
+    } else if (seen_glue++ == 0) {
+        log_line("glue idle entered");
+    }
+    if (g_main_depth) {
+        return;
+    }
+    g_main_depth++;
+    syn_features_before();
+    ensure_lua();
+    if (in_game) {
+        syn_features_after();
+    }
+    g_main_depth--;
+}
+
+int hook_glue_idle(const void* data, void* param) {
+    pump_main(false);
+    return g_glue_idle(data, param);
+}
+
+int hook_game_idle(const void* data, void* param) {
+    pump_main(true);
+    return g_game_idle(data, param);
+}
+
+void hook_idle(const char* symbol, const uint8_t* prefix, size_t bytes, void* hook, IdleFn* slot, const char* label) {
+    void* target = nullptr;
+    if (!syn_resolve(symbol, &target)) {
+        log_line("missing %s", label);
+        return;
+    }
+    if (memcmp(target, prefix, bytes) != 0) {
+        log_line("%s prologue mismatch", label);
+        return;
+    }
+    void* tramp = detour(target, bytes, hook, label);
+    if (tramp) {
+        *slot = reinterpret_cast<IdleFn>(tramp);
+    }
 }
 
 const char* root_dir() {
@@ -591,9 +685,12 @@ void install() {
         return;
     }
     if (patch_process(process)) {
-        log_line("hooked NetClient::ProcessMessage at %p", process);
         log_stderr("synastria: hooked opcode %#x", kOpcode);
     }
+    hook_idle("_ZN8CGlueMgr4IdleEPKvPv", kGlueIdle, sizeof(kGlueIdle),
+              reinterpret_cast<void*>(hook_glue_idle), &g_glue_idle, "CGlueMgr::Idle");
+    hook_idle("_ZN8CGGameUI4IdleEPKvPv", kGameIdle, sizeof(kGameIdle),
+              reinterpret_cast<void*>(hook_game_idle), &g_game_idle, "CGGameUI::Idle");
     patch_character_cap();
 }
 

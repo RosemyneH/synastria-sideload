@@ -738,7 +738,7 @@ void syn_features_after() {
     if (!g_natives_ready || g_scripts_ready) {
         return;
     }
-    if (g_classes_ready || (g_in_world && g_script_wait++ > 30)) {
+    if (g_classes_ready || (g_in_world && g_script_wait++ > 180)) {
         run_scripts();
     }
 }
