@@ -44,6 +44,7 @@ int g_create_alt = 0;
 bool g_classes_ready = false;
 bool g_natives_ready = false;
 bool g_scripts_ready = false;
+bool g_in_world = false;
 int g_script_wait = 0;
 
 std::vector<std::string> g_scripts;
@@ -729,14 +730,17 @@ void syn_features_before() {
     register_natives();
 }
 
+void syn_features_world() {
+    g_in_world = true;
+}
+
 void syn_features_after() {
     if (!g_natives_ready || g_scripts_ready) {
         return;
     }
-    if (!g_classes_ready && g_script_wait++ < 400) {
-        return;
+    if (g_classes_ready || (g_in_world && g_script_wait++ > 30)) {
+        run_scripts();
     }
-    run_scripts();
 }
 
 void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size) {

@@ -66,9 +66,9 @@ constexpr char kLoginFooter[] =
 constexpr char kCreateButtonLua[] =
     "MAX_CHARACTERS_PER_REALM = 20\n"
     "MAX_CHARACTERS_DISPLAYED = 20\n"
-    "local frame = _G[\"CharacterSelectCharacterFrame\"]\n"
-    "local button = _G[\"CharSelectCreateCharacterButton\"]\n"
     "local function place()\n"
+    "  local frame = _G[\"CharacterSelectCharacterFrame\"]\n"
+    "  local button = _G[\"CharSelectCreateCharacterButton\"]\n"
     "  if not button or not frame then return end\n"
     "  local num = GetNumCharacters() or 0\n"
     "  if num >= 20 then button:Hide() return end\n"
@@ -78,7 +78,22 @@ constexpr char kCreateButtonLua[] =
     "  button:Show()\n"
     "  if button.Enable then button:Enable() end\n"
     "end\n"
-    "if frame and button and not SynastriaCreateHook and type(UpdateCharacterList) == \"function\" then\n"
+    "pcall(function()\n"
+    "  local parent = _G[\"CharacterSelectCharacterFrame\"]\n"
+    "  if parent then\n"
+    "    for i = 11, 20 do\n"
+    "      if not _G[\"CharSelectCharacterButton\" .. i] then\n"
+    "        local prev = _G[\"CharSelectCharacterButton\" .. (i - 1)]\n"
+    "        if prev then\n"
+    "          local btn = CreateFrame(\"Button\", \"CharSelectCharacterButton\" .. i, parent, \"CharSelectCharacterButtonTemplate\", i)\n"
+    "          btn:SetPoint(\"TOP\", prev, \"BOTTOM\", 0, 8)\n"
+    "          btn:SetSize(256, 35)\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "end)\n"
+    "if not SynastriaCreateHook and type(UpdateCharacterList) == \"function\" then\n"
     "  SynastriaCreateHook = true\n"
     "  local previous = UpdateCharacterList\n"
     "  function UpdateCharacterList(...)\n"
@@ -103,6 +118,8 @@ constexpr uint8_t kPrologue[] = {
 
 using ProcessFn = int (*)(void*, uint32_t, void*, int);
 using SetHandlerFn = void (*)(int, int (*)(void*, int, unsigned, void*), void*);
+using NetSetHandlerFn = void (*)(void*, int, int (*)(void*, int, unsigned, void*), void*);
+using NetSendFn = void (*)(void*, void*);
 using SendFn = void (*)(void*);
 using CtorFn = void (*)(void*);
 using DtorFn = void (*)(void*);
@@ -126,6 +143,9 @@ struct StoreView {
 };
 
 SetHandlerFn g_set_handler = nullptr;
+NetSetHandlerFn g_net_set = nullptr;
+NetSendFn g_net_send = nullptr;
+void* g_net = nullptr;
 SendFn g_send = nullptr;
 CtorFn g_ctor = nullptr;
 DtorFn g_dtor = nullptr;
@@ -221,7 +241,7 @@ bool patch_process(void* target) {
 }
 
 bool can_send() {
-    return g_connection && *g_connection && g_ctor && g_send && g_put_u8 && g_put_u32 && g_finalize && g_dtor;
+    return g_ctor && g_put_u8 && g_put_u32 && g_finalize && g_dtor && (g_net_send || g_send);
 }
 
 void send_ack() {
@@ -236,7 +256,11 @@ void send_ack() {
     g_put_u32(raw, kReplyTag);
     g_put_u32(raw, g_token);
     g_finalize(raw);
-    g_send(raw);
+    if (g_net_send && g_net) {
+        g_net_send(g_net, raw);
+    } else if (g_send) {
+        g_send(raw);
+    }
     g_dtor(raw);
 }
 
@@ -255,7 +279,11 @@ void send_presence() {
     g_put_u32(raw, 0);
     g_put_u8(raw, 0);
     g_finalize(raw);
-    g_send(raw);
+    if (g_net_send && g_net) {
+        g_net_send(g_net, raw);
+    } else if (g_send) {
+        g_send(raw);
+    }
     g_dtor(raw);
     log_line("announced WoWExt on enter world");
     log_stderr("synastria: announced extension");
@@ -314,16 +342,16 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
     return 1;
 }
 
-void ensure_handler() {
-    if (g_handler_ready || !g_set_handler) {
+void ensure_handler(void* net) {
+    if (net) {
+        g_net = net;
+    }
+    if (g_handler_ready || !g_net_set || !g_net) {
         return;
     }
-    if (!g_connection || !*g_connection) {
-        return;
-    }
-    g_set_handler(kOpcode, on_packet, nullptr);
+    g_net_set(g_net, kOpcode, on_packet, nullptr);
     g_handler_ready = true;
-    log_line("registered handler for opcode %#x", kOpcode);
+    log_line("registered handler for opcode %#x on %p", kOpcode, g_net);
 }
 
 bool patch_character_cap() {
@@ -426,10 +454,15 @@ void ensure_lua() {
 }
 
 int hook_process(void* self, uint32_t time, void* msg, int unused) {
+    static int entries = 0;
+    if (entries++ == 0) {
+        log_line("hook entered");
+    }
     if (g_depth++ == 0) {
-        ensure_handler();
+        ensure_handler(self);
         syn_features_before();
         if (peek_opcode(msg) == kLoginVerifyWorld) {
+            syn_features_world();
             send_presence();
         }
         ensure_lua();
@@ -455,6 +488,9 @@ bool bind_symbol(const char* name, void** slot) {
 bool resolve_all() {
     return bind_symbol("_ZN14ClientServices17SetMessageHandlerE10NETMESSAGEPFiPvS0_jP10CDataStoreES1_",
                         reinterpret_cast<void**>(&g_set_handler))
+        && bind_symbol("_ZN9NetClient17SetMessageHandlerE10NETMESSAGEPFiPvS0_jP10CDataStoreES1_",
+                        reinterpret_cast<void**>(&g_net_set))
+        && bind_symbol("_ZN9NetClient4SendEP10CDataStore", reinterpret_cast<void**>(&g_net_send))
         && bind_symbol("_ZN14ClientServices5Send2EP10CDataStore", reinterpret_cast<void**>(&g_send))
         && bind_symbol("_ZN14ClientServices19s_currentConnectionE", reinterpret_cast<void**>(&g_connection))
         && bind_symbol("_ZN10CDataStoreC1Ev", reinterpret_cast<void**>(&g_ctor))
