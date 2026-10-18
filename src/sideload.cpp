@@ -23,6 +23,45 @@ constexpr char kLoginGuard[] =
     "if not _G[\"CharacterSelectCharacterFrame\"] then return end\n"
     "SynastriaLoginPatch = true\n";
 
+// ʕ •ᴥ•ʔ✿ Glue hides Create when count >= 10, then pins it under slot 14, off the frame. ✿ ʕ •ᴥ•ʔ
+constexpr char kLoginFooter[] =
+    "MAX_CHARACTERS_PER_REALM = 20\n"
+    "MAX_CHARACTERS_DISPLAYED = 20\n"
+    "local createButton = _G[\"CharSelectCreateCharacterButton\"]\n"
+    "local createPoint, createRel, createRelPoint, createX, createY\n"
+    "if createButton then\n"
+    "  createPoint, createRel, createRelPoint, createX, createY = createButton:GetPoint(1)\n"
+    "end\n"
+    "local function SynastriaPlaceCreate()\n"
+    "  if not createButton then\n"
+    "    createButton = _G[\"CharSelectCreateCharacterButton\"]\n"
+    "    if createButton and not createPoint then\n"
+    "      createPoint, createRel, createRelPoint, createX, createY = createButton:GetPoint(1)\n"
+    "    end\n"
+    "  end\n"
+    "  if not createButton then return end\n"
+    "  local num = GetNumCharacters() or 0\n"
+    "  if num >= 20 then\n"
+    "    createButton:Hide()\n"
+    "    return\n"
+    "  end\n"
+    "  if createPoint then\n"
+    "    createButton:ClearAllPoints()\n"
+    "    createButton:SetPoint(createPoint, createRel, createRelPoint, createX, createY)\n"
+    "  end\n"
+    "  createButton:Show()\n"
+    "  if createButton.Enable then createButton:Enable() end\n"
+    "end\n"
+    "if type(UpdateCharacterList) == \"function\" then\n"
+    "  local previous = UpdateCharacterList\n"
+    "  function UpdateCharacterList(...)\n"
+    "    local result = previous(...)\n"
+    "    SynastriaPlaceCreate()\n"
+    "    return result\n"
+    "  end\n"
+    "end\n"
+    "SynastriaPlaceCreate()\n";
+
 constexpr uint8_t kPrologue[] = {
     0x41, 0x56,
     0x41, 0x89, 0xf6,
@@ -257,13 +296,15 @@ void prepare_login_lua() {
         return;
     }
     size_t guard = sizeof(kLoginGuard) - 1;
-    g_login_lua = static_cast<char*>(malloc(guard + g_cache.lua_bytes + 1));
+    size_t footer = sizeof(kLoginFooter) - 1;
+    g_login_lua = static_cast<char*>(malloc(guard + g_cache.lua_bytes + footer + 1));
     if (!g_login_lua) {
         return;
     }
     memcpy(g_login_lua, kLoginGuard, guard);
     memcpy(g_login_lua + guard, g_cache.lua, g_cache.lua_bytes);
-    g_login_lua[guard + g_cache.lua_bytes] = 0;
+    memcpy(g_login_lua + guard + g_cache.lua_bytes, kLoginFooter, footer);
+    g_login_lua[guard + g_cache.lua_bytes + footer] = 0;
 }
 
 void ensure_lua() {
