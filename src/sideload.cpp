@@ -71,7 +71,19 @@ constexpr char kLoginFooter[] =
     "    return result\n"
     "  end\n"
     "end\n"
-    "SynastriaPlaceCreate()\n";
+    "if not SynastriaInfoHook and type(GetCharacterInfo) == \"function\" then\n"
+    "  SynastriaInfoHook = true\n"
+    "  local rawInfo = GetCharacterInfo\n"
+    "  function GetCharacterInfo(index, ...)\n"
+    "    if SynastriaHarvest then SynastriaHarvest() end\n"
+    "    local name, race, class, level, zone, sex, ghost, pcc, prc, pfc = rawInfo(index, ...)\n"
+    "    local combo = SynastriaCharacterClass and SynastriaCharacterClass(index)\n"
+    "    if combo then class = combo end\n"
+    "    return name, race, class, level, zone, sex, ghost, pcc, prc, pfc\n"
+    "  end\n"
+    "end\n"
+    "SynastriaPlaceCreate()\n"
+    "if type(UpdateCharacterList) == \"function\" then UpdateCharacterList() end\n";
 
 constexpr char kCreateButtonLua[] =
     "MAX_CHARACTERS_PER_REALM = 20\n"
@@ -128,6 +140,7 @@ constexpr uint8_t kPrologue[] = {
 };
 
 using ProcessFn = int (*)(void*, uint32_t, void*, int);
+using HandleDataFn = int (*)(void*, uint32_t, void*, int);
 using IdleFn = int (*)(const void*, void*);
 using SetHandlerFn = void (*)(int, int (*)(void*, int, unsigned, void*), void*);
 using NetSetHandlerFn = void (*)(void*, int, int (*)(void*, int, unsigned, void*), void*);
@@ -175,9 +188,9 @@ LuaToStringFn g_lua_tolstring = nullptr;
 char* g_login_lua = nullptr;
 IdleFn g_glue_idle = nullptr;
 IdleFn g_game_idle = nullptr;
-int g_lua_tries = 0;
 void** g_connection = nullptr;
 ProcessFn g_process = nullptr;
+HandleDataFn g_handle_data = nullptr;
 
 SynCache g_cache{};
 FILE* g_log = nullptr;
@@ -451,31 +464,27 @@ void ensure_lua() {
     }
 
     if (!g_lua_ready && g_login_lua) {
-        if (g_lua_tries++ > 200) {
-            g_lua_ready = true;
-            log_line("login patch gave up waiting for CharacterSelect");
-        } else {
-            g_lua_execute(g_login_lua, "WoWExt3.bin", "synastria");
-            int applied = 0;
-            if (g_lua_getfield && g_lua_toboolean && g_lua_settop) {
-                g_lua_getfield(state, kLuaGlobals, "SynastriaLoginPatch");
-                applied = g_lua_toboolean(state, -1);
-                g_lua_settop(state, -2);
-                if (!applied && g_lua_tolstring && !g_login_error_logged) {
-                    g_lua_getfield(state, kLuaGlobals, "SynastriaLoginError");
-                    const char* err = g_lua_tolstring(state, -1, nullptr);
-                    if (err && err[0]) {
-                        log_line("login patch error: %s", err);
-                        g_login_error_logged = true;
-                    }
-                    g_lua_settop(state, -2);
+        g_lua_execute(g_login_lua, "WoWExt3.bin", "synastria");
+        int applied = 0;
+        if (g_lua_getfield && g_lua_toboolean && g_lua_settop) {
+            g_lua_getfield(state, kLuaGlobals, "SynastriaLoginPatch");
+            applied = g_lua_toboolean(state, -1);
+            g_lua_settop(state, -2);
+            if (!applied && g_lua_tolstring && !g_login_error_logged) {
+                g_lua_getfield(state, kLuaGlobals, "SynastriaLoginError");
+                const char* err = g_lua_tolstring(state, -1, nullptr);
+                if (err && err[0]) {
+                    log_line("login patch error: %s", err);
+                    g_login_error_logged = true;
+                    g_lua_ready = true;
                 }
+                g_lua_settop(state, -2);
             }
-            if (applied) {
-                g_lua_ready = true;
-                log_line("login patch applied from WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
-                log_stderr("synastria: login patch applied");
-            }
+        }
+        if (applied) {
+            g_lua_ready = true;
+            log_line("login patch applied from WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
+            log_stderr("synastria: login patch applied");
         }
     }
 
@@ -543,6 +552,51 @@ bool resolve_all() {
         && bind_symbol("lua_tolstring", reinterpret_cast<void**>(&g_lua_tolstring));
 }
 
+constexpr uint8_t kHandleData[] = {
+    0x41, 0x57,
+    0x41, 0x89, 0xf7,
+    0x41, 0x56,
+    0x53,
+    0x48, 0x89, 0xfb,
+    0x48, 0x83, 0xec, 0x50,
+};
+
+int hook_handle_data(void* self, uint32_t time, void* data, int size) {
+    static int entries = 0;
+    if (entries++ == 0) {
+        log_line("handle data entered");
+    }
+    ensure_handler(self);
+    if (data && size >= 2) {
+        uint16_t opcode = 0;
+        memcpy(&opcode, data, sizeof(opcode));
+        if (opcode == kLoginVerifyWorld) {
+            syn_features_world();
+            send_presence();
+        }
+    }
+    return g_handle_data(self, time, data, size);
+}
+
+void allow_extension_code() {
+    void* target = nullptr;
+    if (!syn_resolve("_Z25OsValidateFunctionPointerPKv", &target)) {
+        log_line("missing OsValidateFunctionPointer");
+        return;
+    }
+    auto* code = static_cast<uint8_t*>(target);
+    long page = sysconf(_SC_PAGESIZE);
+    uintptr_t start = reinterpret_cast<uintptr_t>(code);
+    uintptr_t page_start = start & ~(static_cast<uintptr_t>(page) - 1);
+    if (mprotect(reinterpret_cast<void*>(page_start), static_cast<size_t>(page), PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        log_line("mprotect failed for function pointer check");
+        return;
+    }
+    code[0] = 0xc3;
+    mprotect(reinterpret_cast<void*>(page_start), static_cast<size_t>(page), PROT_READ | PROT_EXEC);
+    log_line("allowed extension lua callbacks");
+}
+
 constexpr uint8_t kGlueIdle[] = {
     0x48, 0x81, 0xec, 0xc8, 0x03, 0x00, 0x00,
     0x48, 0x89, 0x9c, 0x24, 0xa0, 0x03, 0x00, 0x00,
@@ -567,6 +621,7 @@ void pump_main(bool in_game) {
     }
     g_main_depth++;
     syn_features_before();
+    syn_features_harvest();
     ensure_lua();
     if (in_game) {
         syn_features_after();
@@ -687,6 +742,17 @@ void install() {
     if (patch_process(process)) {
         log_stderr("synastria: hooked opcode %#x", kOpcode);
     }
+    void* handle_data = nullptr;
+    if (syn_resolve("_ZN9NetClient10HandleDataEjPvi", &handle_data)
+        && memcmp(handle_data, kHandleData, sizeof(kHandleData)) == 0) {
+        void* tramp = detour(handle_data, sizeof(kHandleData), reinterpret_cast<void*>(hook_handle_data), "NetClient::HandleData");
+        if (tramp) {
+            g_handle_data = reinterpret_cast<HandleDataFn>(tramp);
+        }
+    } else {
+        log_line("HandleData prologue mismatch");
+    }
+    allow_extension_code();
     hook_idle("_ZN8CGlueMgr4IdleEPKvPv", kGlueIdle, sizeof(kGlueIdle),
               reinterpret_cast<void*>(hook_glue_idle), &g_glue_idle, "CGlueMgr::Idle");
     hook_idle("_ZN8CGGameUI4IdleEPKvPv", kGameIdle, sizeof(kGameIdle),

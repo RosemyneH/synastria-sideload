@@ -222,17 +222,60 @@ int cmc_dual_single(void* state) {
     return 1;
 }
 
+int class_rank(int id) {
+    static const int kOrder[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 11};
+    for (int i = 0; i < 10; ++i) {
+        if (kOrder[i] == id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// ʕ •ᴥ•ʔ✿ Sorted class pairs from WoWExt.dll. Warrior+Druid is Barbarian. ✿ ʕ •ᴥ•ʔ
+const char* combo_name(int a, int b) {
+    static const char* kCombo[] = {
+        "Warlord", "Champion", "Soldier", "Blademaster", "Crusader", "Butcher", "Ravager", "Battlemage", "Vanquisher", "Barbarian",
+        "Justicar", "Avenger", "Agent", "Martyr", "Enforcer", "Sentinel", "Inquisitor", "Warden", "Guardian",
+        "Windrunner", "Scout", "Seer", "Slayer", "Tempest", "Arcanist", "Trickster", "Ranger",
+        "Shadowblade", "Herald", "Assassin", "Ninja", "Spellblade", "Voidstalker", "Spy",
+        "Avatar", "Wraith", "Oracle", "Mystic", "Siren", "Empath",
+        "Revenant", "Summoner", "Lich", "Necromancer", "Dreadweaver",
+        "Stormrider", "Elementalist", "Harbinger", "Sage",
+        "Wizard", "Sorcerer", "Conjurer",
+        "Doomcaller", "Witch",
+        "Wildspeaker",
+    };
+    int ra = class_rank(a);
+    int rb = class_rank(b);
+    if (ra < 0 || rb < 0) {
+        return nullptr;
+    }
+    if (ra > rb) {
+        int swap = ra;
+        ra = rb;
+        rb = swap;
+    }
+    int index = rb - ra;
+    for (int i = 0; i < ra; ++i) {
+        index += 10 - i;
+    }
+    if (index < 0 || index >= static_cast<int>(sizeof(kCombo) / sizeof(kCombo[0]))) {
+        return nullptr;
+    }
+    return kCombo[index];
+}
+
 void push_pack_name(void* state, int pack) {
     int low = pack & 0xff;
     int high = (pack >> 8) & 0xff;
-    const ClassInfo* a = class_info(low);
-    const ClassInfo* b = class_info(high);
-    if (a && b) {
-        char text[64];
-        snprintf(text, sizeof(text), "%s / %s", a->name, b->name);
-        g_push_str(state, text);
+    const char* combo = combo_name(low, high);
+    if (combo) {
+        g_push_str(state, combo);
         return;
     }
+    const ClassInfo* a = class_info(low);
+    const ClassInfo* b = class_info(high);
     if (a) {
         g_push_str(state, a->name);
         return;
@@ -251,11 +294,12 @@ int cmc_from_pack(void* state) {
 
 int cmc_my_name(void* state) {
     if (g_class_count >= 2 && g_classes[0].id && g_classes[1].id) {
-        char text[64];
-        const ClassInfo* a = class_info(g_classes[0].id);
-        const ClassInfo* b = class_info(g_classes[1].id);
-        snprintf(text, sizeof(text), "%s / %s", a ? a->name : "?", b ? b->name : "?");
-        g_push_str(state, text);
+        const char* combo = combo_name(g_classes[0].id, g_classes[1].id);
+        if (combo) {
+            g_push_str(state, combo);
+            return 1;
+        }
+        g_push_nil(state);
         return 1;
     }
     if (g_class_count >= 1 && g_classes[0].id) {
@@ -528,6 +572,77 @@ bool bind_lua() {
         && syn_resolve("lua_isnumber", reinterpret_cast<void**>(&g_is_num));
 }
 
+struct ListedClass {
+    uint8_t primary;
+    uint8_t alt;
+};
+
+ListedClass g_listed[20]{};
+void* g_list_data = nullptr;
+int g_list_count = 0;
+uint8_t* g_list_base = nullptr;
+
+void harvest_characters() {
+    if (!g_list_base) {
+        void* symbol = nullptr;
+        if (!syn_resolve("_ZN19CCharacterSelection15s_characterListE", &symbol)) {
+            return;
+        }
+        g_list_base = static_cast<uint8_t*>(symbol);
+    }
+    int count = *reinterpret_cast<int*>(g_list_base + 4);
+    uint8_t* data = *reinterpret_cast<uint8_t**>(g_list_base + 8);
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > 20) {
+        count = 20;
+    }
+    if (data != g_list_data) {
+        memset(g_listed, 0, sizeof(g_listed));
+        g_list_data = data;
+    }
+    g_list_count = count;
+    if (!data) {
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        uint8_t* row = data + static_cast<size_t>(i) * 0x1a0;
+        uint32_t* zone = reinterpret_cast<uint32_t*>(row + 0x3c);
+        uint8_t alt = static_cast<uint8_t>(*zone >> 24);
+        uint8_t primary = row[0x179];
+        if (alt) {
+            g_listed[i].primary = primary;
+            g_listed[i].alt = alt;
+            *zone &= 0x00ffffff;
+        } else if (!g_listed[i].primary) {
+            g_listed[i].primary = primary;
+        }
+    }
+}
+
+int native_harvest(void* state) {
+    harvest_characters();
+    (void)state;
+    return 0;
+}
+
+int native_character_class(void* state) {
+    harvest_characters();
+    int index = arg_int(state, 1) - 1;
+    if (index < 0 || index >= g_list_count || !g_listed[index].alt) {
+        g_push_nil(state);
+        return 1;
+    }
+    const char* name = combo_name(g_listed[index].primary, g_listed[index].alt);
+    if (!name) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_str(state, name);
+    return 1;
+}
+
 void register_cmc(const char* name, int (*fn)(void*)) {
     g_register(name, fn);
 }
@@ -552,6 +667,8 @@ void register_natives() {
     register_cmc("CMCSetSelectedTalents", cmc_talents);
     register_cmc("CMCCreateGetSelectedClass", cmc_create_get);
     register_cmc("CMCCreateSetSelectedClass", cmc_create_set);
+    register_cmc("SynastriaHarvest", native_harvest);
+    register_cmc("SynastriaCharacterClass", native_character_class);
     register_cmc("GetItemInfoCustom", native_item_info);
     register_cmc("Custom_GetItemIdFromName", native_item_id_from_name);
     register_cmc("Custom_IsObjLocLoaded", native_obj_loaded);
@@ -732,6 +849,10 @@ void syn_features_before() {
 
 void syn_features_world() {
     g_in_world = true;
+}
+
+void syn_features_harvest() {
+    harvest_characters();
 }
 
 void syn_features_after() {
