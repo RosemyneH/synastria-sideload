@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -46,6 +47,13 @@ bool g_scripts_ready = false;
 int g_script_wait = 0;
 
 std::vector<std::string> g_scripts;
+std::unordered_map<int, std::string> g_item_names;
+std::vector<std::string> g_obj_names;
+std::vector<std::string> g_itemloc_names;
+int g_obj_version = 0;
+int g_itemloc_version = 0;
+bool g_obj_loaded = false;
+bool g_itemloc_loaded = false;
 
 using RegisterFn = void (*)(const char*, int (*)(void*));
 using ExecFn = void (*)(const char*, const char*, const char*);
@@ -314,8 +322,203 @@ int stub_native(void*) {
     return 0;
 }
 
+int native_obj_loaded(void* state) {
+    g_push_bool(state, g_obj_loaded ? 1 : 0);
+    return 1;
+}
+
+int native_obj_version(void* state) {
+    g_push_num(state, g_obj_version);
+    return 1;
+}
+
+int native_get_obj_loc(void* state) {
+    int id = arg_int(state, 2);
+    g_push_nil(state);
+    if (id >= 1 && id <= static_cast<int>(g_obj_names.size())) {
+        g_push_str(state, g_obj_names[static_cast<size_t>(id - 1)].c_str());
+    } else {
+        g_push_nil(state);
+    }
+    return 2;
+}
+
+int native_itemloc_loaded(void* state) {
+    g_push_bool(state, g_itemloc_loaded ? 1 : 0);
+    return 1;
+}
+
+int native_zero(void* state) {
+    g_push_num(state, 0);
+    return 1;
+}
+
+int native_true(void* state) {
+    g_push_bool(state, 1);
+    return 1;
+}
+
+int native_item_info(void* state) {
+    int id = arg_int(state, 1);
+    auto found = g_item_names.find(id);
+    if (found == g_item_names.end()) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_str(state, found->second.c_str());
+    return 1;
+}
+
+int native_item_id_from_name(void* state) {
+    return 0;
+}
+
+void collect_cstr(const uint8_t* data, size_t size, size_t start, std::vector<std::string>& out) {
+    size_t i = start;
+    while (i < size) {
+        if (data[i] < 32 || data[i] >= 127) {
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        while (j < size && data[j] >= 32 && data[j] < 127) {
+            ++j;
+        }
+        if (j - i >= 4 && j < size && data[j] == 0) {
+            out.emplace_back(reinterpret_cast<const char*>(data + i), j - i);
+        }
+        i = j + 1;
+    }
+}
+
+bool read_file(const char* path, std::vector<uint8_t>& out) {
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        return false;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return false;
+    }
+    long length = ftell(file);
+    if (length <= 0) {
+        fclose(file);
+        return false;
+    }
+    rewind(file);
+    out.resize(static_cast<size_t>(length));
+    size_t got = fread(out.data(), 1, out.size(), file);
+    fclose(file);
+    return got == out.size();
+}
+
+bool take_bytes(const uint8_t* data, size_t size, size_t& offset, size_t count) {
+    if (offset + count > size) {
+        return false;
+    }
+    offset += count;
+    return true;
+}
+
+void load_item_db(const uint8_t* data, size_t size) {
+    if (size < 8) {
+        return;
+    }
+    uint32_t version = 0;
+    memcpy(&version, data, 4);
+    if (version != 10) {
+        log_line("WoWExt2.bin version %u rejected", version);
+        return;
+    }
+    size_t offset = 4;
+    int indexed = 0;
+    for (int id = 0; id < 0x10000 && offset < size; ++id) {
+        uint8_t flag = data[offset++];
+        if ((flag & 1) == 0) {
+            continue;
+        }
+        if (offset + 2 > size) {
+            break;
+        }
+        uint8_t kind = data[offset++];
+        uint8_t length = data[offset++];
+        if (length == 0 || length > 80 || offset + length > size) {
+            break;
+        }
+        bool printable = true;
+        for (uint8_t i = 0; i < length; ++i) {
+            unsigned char c = data[offset + i];
+            if (c < 32 || c >= 127) {
+                printable = false;
+                break;
+            }
+        }
+        if (!printable) {
+            break;
+        }
+        g_item_names.emplace(id, std::string(reinterpret_cast<const char*>(data + offset), length));
+        offset += length;
+        auto eat = [&](size_t count) {
+            return take_bytes(data, size, offset, count);
+        };
+        if (!eat(2)) {
+            break;
+        }
+        size_t extra = 0;
+        if (flag & 0x02) extra += 1;
+        if (flag & 0x04) extra += 1;
+        if (flag & 0x08) extra += 1;
+        if (flag & 0x10) extra += 1;
+        if (flag & 0x20) extra += 1;
+        if (flag & 0x40) extra += 2;
+        if (flag & 0x80) extra += 2;
+        if (!eat(extra) || offset >= size) {
+            break;
+        }
+        uint8_t flag2 = data[offset++];
+        size_t tail = 0;
+        tail += (flag2 & 1) ? 1 : 2;
+        if (flag2 & 2) tail += 1;
+        if (flag2 & 4) tail += 1;
+        if (flag2 & 8) tail += 5;
+        tail += (flag2 & 0x10) ? 2 : 4;
+        tail += 4;
+        if (flag2 & 0x20) tail += 8;
+        if (!eat(tail)) {
+            break;
+        }
+        ++indexed;
+        (void)kind;
+    }
+    log_line("WoWExt2.bin %zu bytes version %u named items %d", size, version, indexed);
+}
+
+void load_obj_loc(const uint8_t* data, size_t size) {
+    if (size < 4) {
+        return;
+    }
+    uint32_t version = 0;
+    memcpy(&version, data, 4);
+    g_obj_version = static_cast<int>(version);
+    collect_cstr(data, size, 20, g_obj_names);
+    g_obj_loaded = version == 1 && !g_obj_names.empty();
+    log_line("WoWExtObjLoc.bin %zu bytes version %u names %zu", size, version, g_obj_names.size());
+}
+
+void load_item_loc(const uint8_t* data, size_t size) {
+    if (size < 4) {
+        return;
+    }
+    uint32_t version = 0;
+    memcpy(&version, data, 4);
+    g_itemloc_version = static_cast<int>(version);
+    collect_cstr(data, size, 16, g_itemloc_names);
+    g_itemloc_loaded = version == 5 && !g_itemloc_names.empty();
+    log_line("WoWExtItemLoc.bin %zu bytes version %u names %zu", size, version, g_itemloc_names.size());
+}
+
 const char* kStubs[] = {
-    "GetItemInfoCustom", "GetItemExtraCustom", "GetItemTagsCustom", "GetItemAffixMask",
+    "GetItemExtraCustom", "GetItemTagsCustom", "GetItemAffixMask",
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
     "Custom_SetLootFilter", "Custom_SetLootFilterRule", "Custom_SetLootFilterRuleEntry",
     "Custom_SetLootFilterOptions", "Custom_SetLootFilterRuleEnabled", "Custom_LootFilterResetToDefault",
@@ -325,10 +528,10 @@ const char* kStubs[] = {
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
     "ItemLocGetSourceCount", "ItemLocGetSourceAt", "ItemLocSetSourceSort", "ItemLocGetSourceSort",
-    "ItemLocGetObjCount", "ItemLocGetObjAt", "ItemLocSetObjSort", "ItemLocFixupObjId", "ItemLocIsLoaded",
+    "ItemLocGetObjCount", "ItemLocGetObjAt", "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocItemIsInZone", "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
-    "Custom_GetPrequest", "Custom_GetItemIdFromName", "Custom_GetZoneName", "Custom_ZoneContains",
+    "Custom_GetPrequest", "Custom_GetZoneName", "Custom_ZoneContains",
     "Custom_GetCurrentZone", "Custom_GetCurrentZoneOur", "Custom_GetQuestName", "Custom_GetQuestData",
     "Custom_GetQuestReq", "Custom_GetQuestCanAccept", "Custom_GetQuestCompleted",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
@@ -344,9 +547,8 @@ const char* kStubs[] = {
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
     "Custom_GetGossipQuests", "Custom_GetHighestLearnedSpell", "Custom_TranslateMapPosition",
-    "Custom_IsObjLocLoaded", "Custom_GetObjLocVersion", "Custom_AddTrackObjLoc", "Custom_RemoveTrackObjLoc",
-    "Custom_ClearTrackObjLoc", "Custom_GetAllTrackObjLoc", "Custom_GetObjLoc", "Custom_CalculateMapMarker",
-    "Custom_GetMapMarker", "Custom_SetMapMarkerOption", "Custom_GetTotalMapMarkerCount",
+    "Custom_AddTrackObjLoc", "Custom_RemoveTrackObjLoc",
+    "Custom_ClearTrackObjLoc", "Custom_CalculateMapMarker",
     "Custom_GetMapFilteredResults", "Custom_SendQuestTrack", "Custom_GetPendingEvents",
     "Custom_GetPendingEventsEx", "Custom_QueueEvent", "Custom_QueueEventEx",
 };
@@ -386,6 +588,19 @@ void register_natives() {
     register_cmc("CMCSetSelectedTalents", cmc_talents);
     register_cmc("CMCCreateGetSelectedClass", cmc_create_get);
     register_cmc("CMCCreateSetSelectedClass", cmc_create_set);
+    register_cmc("GetItemInfoCustom", native_item_info);
+    register_cmc("Custom_GetItemIdFromName", native_item_id_from_name);
+    register_cmc("Custom_IsObjLocLoaded", native_obj_loaded);
+    register_cmc("Custom_GetObjLocVersion", native_obj_version);
+    register_cmc("Custom_GetObjLoc", native_get_obj_loc);
+    register_cmc("ItemLocIsLoaded", native_itemloc_loaded);
+    register_cmc("GetCustomGameData", native_zero);
+    register_cmc("GetCustomGameDataStr", stub_native);
+    register_cmc("Custom_GetAllTrackObjLoc", stub_native);
+    register_cmc("Custom_GetMapMarker", native_zero);
+    register_cmc("Custom_GetTotalMapMarkerCount", native_zero);
+    register_cmc("Custom_SetMapMarkerOption", native_zero);
+    register_cmc("Custom_AddTrackObjLoc", native_true);
     for (const char* name : kStubs) {
         g_register(name, stub_native);
     }
@@ -509,6 +724,32 @@ void syn_features_load(const char* root) {
     char path[1024];
     snprintf(path, sizeof(path), "%s/WoWExt.bin", root);
     load_container(path);
+
+    std::vector<uint8_t> bytes;
+    snprintf(path, sizeof(path), "%s/WoWExt2.bin", root);
+    if (read_file(path, bytes)) {
+        load_item_db(bytes.data(), bytes.size());
+    } else {
+        log_line("WoWExt2.bin missing");
+    }
+    snprintf(path, sizeof(path), "%s/WoWExtItemLoc.bin", root);
+    if (read_file(path, bytes)) {
+        load_item_loc(bytes.data(), bytes.size());
+    } else {
+        log_line("WoWExtItemLoc.bin missing");
+    }
+    snprintf(path, sizeof(path), "%s/WoWExtObjLoc.bin", root);
+    if (read_file(path, bytes)) {
+        load_obj_loc(bytes.data(), bytes.size());
+    } else {
+        log_line("WoWExtObjLoc.bin missing");
+    }
+    snprintf(path, sizeof(path), "%s/WoWExt3.bin", root);
+    if (read_file(path, bytes)) {
+        log_line("WoWExt3.bin %zu bytes", bytes.size());
+    } else {
+        log_line("WoWExt3.bin missing");
+    }
 }
 
 void syn_features_before() {
