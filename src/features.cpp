@@ -6,11 +6,11 @@
 
 #include <cstdarg>
 #include <cstdint>
+#include <exception>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -47,7 +47,7 @@ bool g_scripts_ready = false;
 int g_script_wait = 0;
 
 std::vector<std::string> g_scripts;
-std::unordered_map<int, std::string> g_item_names;
+std::vector<std::string> g_item_name_list;
 std::vector<std::string> g_obj_names;
 std::vector<std::string> g_itemloc_names;
 int g_obj_version = 0;
@@ -359,13 +359,8 @@ int native_true(void* state) {
 }
 
 int native_item_info(void* state) {
-    int id = arg_int(state, 1);
-    auto found = g_item_names.find(id);
-    if (found == g_item_names.end()) {
-        g_push_nil(state);
-        return 1;
-    }
-    g_push_str(state, found->second.c_str());
+    g_push_nil(state);
+    (void)g_item_name_list;
     return 1;
 }
 
@@ -391,36 +386,39 @@ void collect_cstr(const uint8_t* data, size_t size, size_t start, std::vector<st
     }
 }
 
-bool read_file(const char* path, std::vector<uint8_t>& out) {
+uint8_t* read_alloc(const char* path, size_t* size) {
+    *size = 0;
     FILE* file = fopen(path, "rb");
     if (!file) {
-        return false;
+        return nullptr;
     }
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
-        return false;
+        return nullptr;
     }
     long length = ftell(file);
     if (length <= 0) {
         fclose(file);
-        return false;
+        return nullptr;
     }
     rewind(file);
-    out.resize(static_cast<size_t>(length));
-    size_t got = fread(out.data(), 1, out.size(), file);
-    fclose(file);
-    return got == out.size();
-}
-
-bool take_bytes(const uint8_t* data, size_t size, size_t& offset, size_t count) {
-    if (offset + count > size) {
-        return false;
+    uint8_t* buf = static_cast<uint8_t*>(malloc(static_cast<size_t>(length)));
+    if (!buf) {
+        fclose(file);
+        return nullptr;
     }
-    offset += count;
-    return true;
+    size_t got = fread(buf, 1, static_cast<size_t>(length), file);
+    fclose(file);
+    if (got != static_cast<size_t>(length)) {
+        free(buf);
+        return nullptr;
+    }
+    *size = got;
+    return buf;
 }
 
 void load_item_db(const uint8_t* data, size_t size) {
+    log_line("WoWExt2.bin start %zu", size);
     if (size < 8) {
         return;
     }
@@ -430,67 +428,32 @@ void load_item_db(const uint8_t* data, size_t size) {
         log_line("WoWExt2.bin version %u rejected", version);
         return;
     }
-    size_t offset = 4;
-    int indexed = 0;
-    for (int id = 0; id < 0x10000 && offset < size; ++id) {
-        uint8_t flag = data[offset++];
-        if ((flag & 1) == 0) {
+    g_item_name_list.clear();
+    int named = 0;
+    for (size_t i = 4; i + 3 < size; ++i) {
+        if (data[i] != 0x3b) {
             continue;
         }
-        if (offset + 2 > size) {
-            break;
-        }
-        uint8_t kind = data[offset++];
-        uint8_t length = data[offset++];
-        if (length == 0 || length > 80 || offset + length > size) {
-            break;
+        uint8_t length = data[i + 2];
+        if (length == 0 || length > 80 || i + 3 + length > size) {
+            continue;
         }
         bool printable = true;
-        for (uint8_t i = 0; i < length; ++i) {
-            unsigned char c = data[offset + i];
+        for (uint8_t n = 0; n < length; ++n) {
+            unsigned char c = data[i + 3 + n];
             if (c < 32 || c >= 127) {
                 printable = false;
                 break;
             }
         }
         if (!printable) {
-            break;
+            continue;
         }
-        g_item_names.emplace(id, std::string(reinterpret_cast<const char*>(data + offset), length));
-        offset += length;
-        auto eat = [&](size_t count) {
-            return take_bytes(data, size, offset, count);
-        };
-        if (!eat(2)) {
-            break;
-        }
-        size_t extra = 0;
-        if (flag & 0x02) extra += 1;
-        if (flag & 0x04) extra += 1;
-        if (flag & 0x08) extra += 1;
-        if (flag & 0x10) extra += 1;
-        if (flag & 0x20) extra += 1;
-        if (flag & 0x40) extra += 2;
-        if (flag & 0x80) extra += 2;
-        if (!eat(extra) || offset >= size) {
-            break;
-        }
-        uint8_t flag2 = data[offset++];
-        size_t tail = 0;
-        tail += (flag2 & 1) ? 1 : 2;
-        if (flag2 & 2) tail += 1;
-        if (flag2 & 4) tail += 1;
-        if (flag2 & 8) tail += 5;
-        tail += (flag2 & 0x10) ? 2 : 4;
-        tail += 4;
-        if (flag2 & 0x20) tail += 8;
-        if (!eat(tail)) {
-            break;
-        }
-        ++indexed;
-        (void)kind;
+        g_item_name_list.emplace_back(reinterpret_cast<const char*>(data + i + 3), length);
+        ++named;
+        i += 2 + length;
     }
-    log_line("WoWExt2.bin %zu bytes version %u named items %d", size, version, indexed);
+    log_line("WoWExt2.bin %zu bytes version %u named items %d", size, version, named);
 }
 
 void load_obj_loc(const uint8_t* data, size_t size) {
@@ -722,33 +685,40 @@ void syn_features_set_log(FILE* log) {
 
 void syn_features_load(const char* root) {
     char path[1024];
-    snprintf(path, sizeof(path), "%s/WoWExt.bin", root);
-    load_container(path);
-
-    std::vector<uint8_t> bytes;
-    snprintf(path, sizeof(path), "%s/WoWExt2.bin", root);
-    if (read_file(path, bytes)) {
-        load_item_db(bytes.data(), bytes.size());
-    } else {
-        log_line("WoWExt2.bin missing");
-    }
-    snprintf(path, sizeof(path), "%s/WoWExtItemLoc.bin", root);
-    if (read_file(path, bytes)) {
-        load_item_loc(bytes.data(), bytes.size());
-    } else {
-        log_line("WoWExtItemLoc.bin missing");
-    }
-    snprintf(path, sizeof(path), "%s/WoWExtObjLoc.bin", root);
-    if (read_file(path, bytes)) {
-        load_obj_loc(bytes.data(), bytes.size());
-    } else {
-        log_line("WoWExtObjLoc.bin missing");
-    }
-    snprintf(path, sizeof(path), "%s/WoWExt3.bin", root);
-    if (read_file(path, bytes)) {
-        log_line("WoWExt3.bin %zu bytes", bytes.size());
-    } else {
-        log_line("WoWExt3.bin missing");
+    try {
+        size_t size = 0;
+        snprintf(path, sizeof(path), "%s/WoWExt2.bin", root);
+        if (uint8_t* bytes = read_alloc(path, &size)) {
+            load_item_db(bytes, size);
+            free(bytes);
+        } else {
+            log_line("WoWExt2.bin missing");
+        }
+        snprintf(path, sizeof(path), "%s/WoWExtItemLoc.bin", root);
+        if (uint8_t* bytes = read_alloc(path, &size)) {
+            load_item_loc(bytes, size);
+            free(bytes);
+        } else {
+            log_line("WoWExtItemLoc.bin missing");
+        }
+        snprintf(path, sizeof(path), "%s/WoWExtObjLoc.bin", root);
+        if (uint8_t* bytes = read_alloc(path, &size)) {
+            load_obj_loc(bytes, size);
+            free(bytes);
+        } else {
+            log_line("WoWExtObjLoc.bin missing");
+        }
+        snprintf(path, sizeof(path), "%s/WoWExt3.bin", root);
+        if (uint8_t* bytes = read_alloc(path, &size)) {
+            log_line("WoWExt3.bin %zu bytes", size);
+            free(bytes);
+        } else {
+            log_line("WoWExt3.bin missing");
+        }
+        snprintf(path, sizeof(path), "%s/WoWExt.bin", root);
+        load_container(path);
+    } catch (const std::exception& error) {
+        log_line("bin load failed: %s", error.what());
     }
 }
 
