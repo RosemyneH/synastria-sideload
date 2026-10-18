@@ -16,6 +16,7 @@ namespace {
 // ʕ •ᴥ•ʔ✿ CMSG_UNUSED5. WoWExt.dll registers this with ClientServices::SetMessageHandler. ✿ ʕ •ᴥ•ʔ
 constexpr int kOpcode = 0x4B8;
 constexpr uint32_t kReplyTag = 0x36;
+constexpr uint16_t kLoginVerifyWorld = 0x236;
 constexpr int kLuaGlobals = -10002;
 constexpr uint8_t kCharacterCap = 20;
 constexpr char kLoginGuard[] =
@@ -61,6 +62,34 @@ constexpr char kLoginFooter[] =
     "  end\n"
     "end\n"
     "SynastriaPlaceCreate()\n";
+
+constexpr char kCreateButtonLua[] =
+    "MAX_CHARACTERS_PER_REALM = 20\n"
+    "MAX_CHARACTERS_DISPLAYED = 20\n"
+    "local frame = _G[\"CharacterSelectCharacterFrame\"]\n"
+    "local button = _G[\"CharSelectCreateCharacterButton\"]\n"
+    "local function place()\n"
+    "  if not button or not frame then return end\n"
+    "  local num = GetNumCharacters() or 0\n"
+    "  if num >= 20 then button:Hide() return end\n"
+    "  button:ClearAllPoints()\n"
+    "  button:SetPoint(\"BOTTOM\", frame, \"BOTTOM\", 0, 16)\n"
+    "  button:SetFrameLevel((frame:GetFrameLevel() or 1) + 20)\n"
+    "  button:Show()\n"
+    "  if button.Enable then button:Enable() end\n"
+    "end\n"
+    "if frame and button and not SynastriaCreateHook and type(UpdateCharacterList) == \"function\" then\n"
+    "  SynastriaCreateHook = true\n"
+    "  local previous = UpdateCharacterList\n"
+    "  function UpdateCharacterList(...)\n"
+    "    MAX_CHARACTERS_PER_REALM = 20\n"
+    "    MAX_CHARACTERS_DISPLAYED = 20\n"
+    "    local result = previous(...)\n"
+    "    place()\n"
+    "    return result\n"
+    "  end\n"
+    "end\n"
+    "place()\n";
 
 constexpr uint8_t kPrologue[] = {
     0x41, 0x56,
@@ -118,6 +147,8 @@ SynCache g_cache{};
 FILE* g_log = nullptr;
 uint32_t g_token = 0;
 bool g_handler_ready = false;
+bool g_announced = false;
+bool g_create_ready = false;
 bool g_lua_ready = false;
 int g_depth = 0;
 
@@ -189,8 +220,12 @@ bool patch_process(void* target) {
     return true;
 }
 
+bool can_send() {
+    return g_connection && *g_connection && g_ctor && g_send && g_put_u8 && g_put_u32 && g_finalize && g_dtor;
+}
+
 void send_ack() {
-    if (!g_connection || !*g_connection || !g_ctor || !g_send) {
+    if (!can_send()) {
         return;
     }
     alignas(16) unsigned char raw[64];
@@ -203,6 +238,41 @@ void send_ack() {
     g_finalize(raw);
     g_send(raw);
     g_dtor(raw);
+}
+
+void send_presence() {
+    if (g_announced || !can_send()) {
+        return;
+    }
+    g_announced = true;
+    send_ack();
+    alignas(16) unsigned char raw[64];
+    memset(raw, 0, sizeof(raw));
+    g_ctor(raw);
+    g_put_u32(raw, static_cast<uint32_t>(kOpcode));
+    g_put_u8(raw, 0x1b);
+    g_put_u8(raw, 1);
+    g_put_u32(raw, 0);
+    g_put_u8(raw, 0);
+    g_finalize(raw);
+    g_send(raw);
+    g_dtor(raw);
+    log_line("announced WoWExt on enter world");
+    log_stderr("synastria: announced extension");
+}
+
+uint16_t peek_opcode(void* msg) {
+    auto* store = static_cast<StoreView*>(msg);
+    if (!store || !store->data || store->size < 2) {
+        return 0xffff;
+    }
+    uint32_t pos = store->read > store->base ? store->read - store->base : 0;
+    if (pos + 2 > store->size) {
+        return 0xffff;
+    }
+    uint16_t id = 0;
+    memcpy(&id, store->data + pos, 2);
+    return id;
 }
 
 const uint8_t* payload(void* msg, uint32_t* nbytes) {
@@ -308,11 +378,27 @@ void prepare_login_lua() {
 }
 
 void ensure_lua() {
-    if (g_lua_ready || !g_login_lua || !g_lua_context || !g_lua_execute) {
+    if (!g_lua_context || !g_lua_execute) {
         return;
     }
     void* state = g_lua_context();
     if (!state) {
+        return;
+    }
+
+    if (!g_create_ready) {
+        g_lua_execute(kCreateButtonLua, "SynastriaCreate.lua", "synastria");
+        if (g_lua_getfield && g_lua_toboolean && g_lua_settop) {
+            g_lua_getfield(state, kLuaGlobals, "SynastriaCreateHook");
+            g_create_ready = g_lua_toboolean(state, -1) != 0;
+            g_lua_settop(state, -2);
+        }
+        if (g_create_ready) {
+            log_line("create character button kept for accounts under 20");
+        }
+    }
+
+    if (g_lua_ready || !g_login_lua) {
         return;
     }
     if (g_lua_tries++ > 200) {
@@ -343,6 +429,9 @@ int hook_process(void* self, uint32_t time, void* msg, int unused) {
     if (g_depth++ == 0) {
         ensure_handler();
         syn_features_before();
+        if (peek_opcode(msg) == kLoginVerifyWorld) {
+            send_presence();
+        }
         ensure_lua();
     }
     int result = g_process(self, time, msg, unused);
