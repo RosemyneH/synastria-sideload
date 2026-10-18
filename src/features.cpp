@@ -1,0 +1,535 @@
+#include "features.h"
+
+#include "sym.h"
+
+#include <lz4.h>
+
+#include <cstdarg>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace {
+
+constexpr uint32_t kMagic = 0x2838C53Au;
+constexpr int kLuaGlobals = -10002;
+constexpr int kMaxClasses = 10;
+
+FILE* g_log = nullptr;
+
+void log_line(const char* fmt, ...) {
+    if (!g_log) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_log, fmt, args);
+    va_end(args);
+    fputc('\n', g_log);
+    fflush(g_log);
+}
+
+struct ClassSlot {
+    uint8_t id = 0;
+    uint8_t extra = 0;
+};
+
+ClassSlot g_classes[kMaxClasses];
+int g_class_count = 0;
+int g_create_alt = 0;
+bool g_classes_ready = false;
+bool g_natives_ready = false;
+bool g_scripts_ready = false;
+int g_script_wait = 0;
+
+std::vector<std::string> g_scripts;
+
+using RegisterFn = void (*)(const char*, int (*)(void*));
+using ExecFn = void (*)(const char*, const char*, const char*);
+using PushNumFn = void (*)(void*, double);
+using PushStrFn = void (*)(void*, const char*);
+using PushBoolFn = void (*)(void*, int);
+using PushNilFn = void (*)(void*);
+using ToNumFn = double (*)(void*, int);
+using IsNumFn = int (*)(void*, int);
+
+RegisterFn g_register = nullptr;
+ExecFn g_exec = nullptr;
+PushNumFn g_push_num = nullptr;
+PushStrFn g_push_str = nullptr;
+PushBoolFn g_push_bool = nullptr;
+PushNilFn g_push_nil = nullptr;
+ToNumFn g_to_num = nullptr;
+IsNumFn g_is_num = nullptr;
+
+struct ClassInfo {
+    int id;
+    const char* key;
+    const char* name;
+    int r, g, b;
+};
+
+const ClassInfo kClasses[] = {
+    {1, "WARRIOR", "Warrior", 199, 156, 110},
+    {2, "PALADIN", "Paladin", 245, 140, 186},
+    {3, "HUNTER", "Hunter", 171, 212, 115},
+    {4, "ROGUE", "Rogue", 255, 245, 105},
+    {5, "PRIEST", "Priest", 255, 255, 255},
+    {6, "DEATHKNIGHT", "Death Knight", 196, 31, 59},
+    {7, "SHAMAN", "Shaman", 0, 112, 222},
+    {8, "MAGE", "Mage", 64, 199, 235},
+    {9, "WARLOCK", "Warlock", 135, 135, 237},
+    {11, "DRUID", "Druid", 255, 125, 10},
+};
+
+bool valid_class(int id) {
+    for (const ClassInfo& info : kClasses) {
+        if (info.id == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const ClassInfo* class_info(int id) {
+    for (const ClassInfo& info : kClasses) {
+        if (info.id == id) {
+            return &info;
+        }
+    }
+    return nullptr;
+}
+
+int arg_int(void* state, int index) {
+    if (!g_is_num || !g_to_num || !g_is_num(state, index)) {
+        return 0;
+    }
+    return static_cast<int>(g_to_num(state, index));
+}
+
+void push_name(void* state, int id) {
+    const ClassInfo* info = class_info(id);
+    if (!info) {
+        g_push_nil(state);
+        return;
+    }
+    g_push_str(state, info->name);
+}
+
+int cmc_count_real(void* state) {
+    int count = 0;
+    for (int i = 0; i < g_class_count; ++i) {
+        if (g_classes[i].id) {
+            ++count;
+        }
+    }
+    if (count <= 0) {
+        count = 1;
+    }
+    g_push_num(state, count);
+    return 1;
+}
+
+int cmc_at(void* state) {
+    int index = arg_int(state, 1) - 1;
+    if (index < 0 || index >= g_class_count || !g_classes[index].id) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_num(state, g_classes[index].id);
+    return 1;
+}
+
+int cmc_has(void* state) {
+    int id = arg_int(state, 1);
+    int found = 0;
+    for (int i = 0; i < g_class_count; ++i) {
+        if (g_classes[i].id == id) {
+            found = 1;
+        }
+    }
+    g_push_bool(state, found);
+    return 1;
+}
+
+int cmc_id(void* state) {
+    g_push_num(state, g_class_count > 0 ? g_classes[0].id : 0);
+    return 1;
+}
+
+int cmc_mask(void* state) {
+    int mask = 0;
+    for (int i = 0; i < g_class_count; ++i) {
+        int id = g_classes[i].id;
+        if (id > 0 && id <= 31) {
+            mask |= 1 << (id - 1);
+        }
+    }
+    g_push_num(state, mask);
+    return 1;
+}
+
+int cmc_key(void* state) {
+    const ClassInfo* info = class_info(arg_int(state, 1));
+    if (!info) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_str(state, info->key);
+    return 1;
+}
+
+int cmc_name(void* state) {
+    push_name(state, arg_int(state, 1));
+    return 1;
+}
+
+int cmc_data(void* state) {
+    int index = arg_int(state, 1) - 1;
+    if (index < 0 || index >= g_class_count) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_num(state, g_classes[index].id);
+    g_push_num(state, g_classes[index].extra);
+    return 2;
+}
+
+int cmc_enabled(void* state) {
+    g_push_num(state, 0x82);
+    return 1;
+}
+
+int cmc_dual_single(void* state) {
+    int same = g_class_count >= 2 && g_classes[0].id && g_classes[0].id == g_classes[1].id;
+    if (!same) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_num(state, 1);
+    return 1;
+}
+
+void push_pack_name(void* state, int pack) {
+    int low = pack & 0xff;
+    int high = (pack >> 8) & 0xff;
+    const ClassInfo* a = class_info(low);
+    const ClassInfo* b = class_info(high);
+    if (a && b) {
+        char text[64];
+        snprintf(text, sizeof(text), "%s / %s", a->name, b->name);
+        g_push_str(state, text);
+        return;
+    }
+    if (a) {
+        g_push_str(state, a->name);
+        return;
+    }
+    if (b) {
+        g_push_str(state, b->name);
+        return;
+    }
+    g_push_nil(state);
+}
+
+int cmc_from_pack(void* state) {
+    push_pack_name(state, arg_int(state, 1));
+    return 1;
+}
+
+int cmc_my_name(void* state) {
+    if (g_class_count >= 2 && g_classes[0].id && g_classes[1].id) {
+        char text[64];
+        const ClassInfo* a = class_info(g_classes[0].id);
+        const ClassInfo* b = class_info(g_classes[1].id);
+        snprintf(text, sizeof(text), "%s / %s", a ? a->name : "?", b ? b->name : "?");
+        g_push_str(state, text);
+        return 1;
+    }
+    if (g_class_count >= 1 && g_classes[0].id) {
+        push_name(state, g_classes[0].id);
+        return 1;
+    }
+    g_push_nil(state);
+    return 1;
+}
+
+void push_color(void* state, int id) {
+    const ClassInfo* info = class_info(id);
+    if (!info) {
+        g_push_nil(state);
+        return;
+    }
+    g_push_num(state, info->r / 255.0);
+    g_push_num(state, info->g / 255.0);
+    g_push_num(state, info->b / 255.0);
+    char text[16];
+    snprintf(text, sizeof(text), "|cff%02x%02x%02x", info->r, info->g, info->b);
+    g_push_str(state, text);
+}
+
+int cmc_color(void* state) {
+    int pack = arg_int(state, 1);
+    int id = pack;
+    if (!class_info(id)) {
+        id = pack & 0xff;
+        if (!class_info(id)) {
+            id = (pack >> 8) & 0xff;
+        }
+    }
+    if (!class_info(id)) {
+        g_push_nil(state);
+        return 1;
+    }
+    push_color(state, id);
+    return 4;
+}
+
+int cmc_talents(void* state) {
+    int id = arg_int(state, 1);
+    int ok = 0;
+    for (int i = 0; i < g_class_count; ++i) {
+        if (g_classes[i].id == id) {
+            ok = 1;
+        }
+    }
+    g_push_bool(state, ok || g_class_count == 0);
+    return 1;
+}
+
+int cmc_create_get(void* state) {
+    g_push_num(state, g_create_alt);
+    return 1;
+}
+
+int cmc_create_set(void* state) {
+    g_create_alt = arg_int(state, 2);
+    return 0;
+}
+
+int stub_native(void*) {
+    return 0;
+}
+
+const char* kStubs[] = {
+    "GetItemInfoCustom", "GetItemExtraCustom", "GetItemTagsCustom", "GetItemAffixMask",
+    "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
+    "Custom_SetLootFilter", "Custom_SetLootFilterRule", "Custom_SetLootFilterRuleEntry",
+    "Custom_SetLootFilterOptions", "Custom_SetLootFilterRuleEnabled", "Custom_LootFilterResetToDefault",
+    "Custom_LootFilterExport", "Custom_LootFilterImport", "Custom_LootFilterExportRule", "Custom_LootFilterImportRule",
+    "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
+    "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
+    "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
+    "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
+    "ItemLocGetSourceCount", "ItemLocGetSourceAt", "ItemLocSetSourceSort", "ItemLocGetSourceSort",
+    "ItemLocGetObjCount", "ItemLocGetObjAt", "ItemLocSetObjSort", "ItemLocFixupObjId", "ItemLocIsLoaded",
+    "ItemLocItemIsInZone", "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
+    "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
+    "Custom_GetPrequest", "Custom_GetItemIdFromName", "Custom_GetZoneName", "Custom_ZoneContains",
+    "Custom_GetCurrentZone", "Custom_GetCurrentZoneOur", "Custom_GetQuestName", "Custom_GetQuestData",
+    "Custom_GetQuestReq", "Custom_GetQuestCanAccept", "Custom_GetQuestCompleted",
+    "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
+    "Custom_IsItemSoulbound", "Custom_GetItemCount", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
+    "Custom_GetItemLinkBySlot", "Custom_GetIdFromLink", "Custom_IsPlayerNear",
+    "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
+    "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
+    "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
+    "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
+    "Custom_IsOnQuest", "Custom_HaveAnyRewardOfQuest", "Custom_GetQuestFaction",
+    "Custom_SetTradeSkillCustomFilter", "Custom_GetSkillIndex",
+    "Custom_GetSpellCooldown", "Custom_GetSpellDesc", "Custom_GetSpellTools", "Custom_GetSpellEffect",
+    "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
+    "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
+    "Custom_GetGossipQuests", "Custom_GetHighestLearnedSpell", "Custom_TranslateMapPosition",
+    "Custom_IsObjLocLoaded", "Custom_GetObjLocVersion", "Custom_AddTrackObjLoc", "Custom_RemoveTrackObjLoc",
+    "Custom_ClearTrackObjLoc", "Custom_GetAllTrackObjLoc", "Custom_GetObjLoc", "Custom_CalculateMapMarker",
+    "Custom_GetMapMarker", "Custom_SetMapMarkerOption", "Custom_GetTotalMapMarkerCount",
+    "Custom_GetMapFilteredResults", "Custom_SendQuestTrack", "Custom_GetPendingEvents",
+    "Custom_GetPendingEventsEx", "Custom_QueueEvent", "Custom_QueueEventEx",
+};
+
+bool bind_lua() {
+    return syn_resolve("_Z28FrameScript_RegisterFunctionPKcPFiP9lua_StateE", reinterpret_cast<void**>(&g_register))
+        && syn_resolve("_Z19FrameScript_ExecutePKcS0_S0_", reinterpret_cast<void**>(&g_exec))
+        && syn_resolve("lua_pushnumber", reinterpret_cast<void**>(&g_push_num))
+        && syn_resolve("lua_pushstring", reinterpret_cast<void**>(&g_push_str))
+        && syn_resolve("lua_pushboolean", reinterpret_cast<void**>(&g_push_bool))
+        && syn_resolve("lua_pushnil", reinterpret_cast<void**>(&g_push_nil))
+        && syn_resolve("lua_tonumber", reinterpret_cast<void**>(&g_to_num))
+        && syn_resolve("lua_isnumber", reinterpret_cast<void**>(&g_is_num));
+}
+
+void register_cmc(const char* name, int (*fn)(void*)) {
+    g_register(name, fn);
+}
+
+void register_natives() {
+    if (g_natives_ready || !g_register) {
+        return;
+    }
+    register_cmc("CMCGetClassCount", cmc_count_real);
+    register_cmc("CMCGetClassAt", cmc_at);
+    register_cmc("CMCHasClass", cmc_has);
+    register_cmc("CMCGetClassId", cmc_id);
+    register_cmc("CMCGetClassMask", cmc_mask);
+    register_cmc("CMCGetClassKey", cmc_key);
+    register_cmc("CMCGetClassName", cmc_name);
+    register_cmc("CMCGetClassData", cmc_data);
+    register_cmc("CMCGetMultiClassEnabled", cmc_enabled);
+    register_cmc("CMCIsDualSingleClass", cmc_dual_single);
+    register_cmc("CMCGetClassNameFromPack", cmc_from_pack);
+    register_cmc("CMCGetMyClassName", cmc_my_name);
+    register_cmc("CMCGetClassNameColor", cmc_color);
+    register_cmc("CMCSetSelectedTalents", cmc_talents);
+    register_cmc("CMCCreateGetSelectedClass", cmc_create_get);
+    register_cmc("CMCCreateSetSelectedClass", cmc_create_set);
+    for (const char* name : kStubs) {
+        g_register(name, stub_native);
+    }
+    g_natives_ready = true;
+    log_line("registered CMC natives and %zu custom stubs", sizeof(kStubs) / sizeof(kStubs[0]));
+}
+
+void run_scripts() {
+    if (g_scripts_ready || !g_exec) {
+        return;
+    }
+    for (const std::string& source : g_scripts) {
+        g_exec(source.c_str(), "WoWExt.bin", "synastria");
+    }
+    g_scripts_ready = true;
+    log_line("executed %zu WoWExt.bin lua containers", g_scripts.size());
+}
+
+bool read_u32(const uint8_t* data, size_t size, size_t& offset, uint32_t& out) {
+    if (offset + 4 > size) {
+        return false;
+    }
+    memcpy(&out, data + offset, 4);
+    offset += 4;
+    return true;
+}
+
+void load_container(const char* path) {
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        log_line("WoWExt.bin missing");
+        return;
+    }
+    fseek(file, 0, SEEK_END);
+    long length = ftell(file);
+    rewind(file);
+    std::vector<uint8_t> data(static_cast<size_t>(length));
+    if (length <= 0 || fread(data.data(), 1, data.size(), file) != data.size()) {
+        fclose(file);
+        return;
+    }
+    fclose(file);
+
+    size_t offset = 0;
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    uint32_t count = 0;
+    if (!read_u32(data.data(), data.size(), offset, magic) || magic != kMagic
+        || !read_u32(data.data(), data.size(), offset, version) || version != 1
+        || !read_u32(data.data(), data.size(), offset, count) || count >= 0x1000) {
+        log_line("WoWExt.bin header rejected");
+        return;
+    }
+
+    int lua_count = 0;
+    int other_count = 0;
+    std::vector<char> plain(1 << 20);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t id = 0;
+        uint32_t data_size = 0;
+        if (!read_u32(data.data(), data.size(), offset, id) || offset + 16 + 4 > data.size()) {
+            break;
+        }
+        offset += 16;
+        if (!read_u32(data.data(), data.size(), offset, data_size) || offset + data_size > data.size()) {
+            break;
+        }
+        const uint8_t* payload = data.data() + offset;
+        offset += data_size;
+        if (data_size == 0) {
+            continue;
+        }
+        int plain_size = LZ4_decompress_safe(reinterpret_cast<const char*>(payload), plain.data(),
+                                              static_cast<int>(data_size), static_cast<int>(plain.size()));
+        if (plain_size < 8) {
+            ++other_count;
+            continue;
+        }
+        int kind = static_cast<int8_t>(plain[1]);
+        if (kind != 2) {
+            ++other_count;
+            continue;
+        }
+        g_scripts.emplace_back(plain.data() + 8, plain.data() + plain_size);
+        ++lua_count;
+        (void)id;
+    }
+    log_line("WoWExt.bin containers lua=%d other=%d", lua_count, other_count);
+}
+
+void adopt_classes(const uint8_t* rest, uint32_t size) {
+    if (size < 2 || rest[0] != 1) {
+        return;
+    }
+    uint8_t count = rest[1];
+    if (count == 0 || count >= kMaxClasses || size < 2u + count * 2u) {
+        return;
+    }
+    ClassSlot next[kMaxClasses];
+    for (uint8_t i = 0; i < count; ++i) {
+        uint8_t id = rest[2 + i * 2];
+        uint8_t extra = rest[3 + i * 2];
+        if (!valid_class(id)) {
+            return;
+        }
+        next[i] = {id, extra};
+    }
+    memcpy(g_classes, next, sizeof(next));
+    g_class_count = count;
+    g_classes_ready = true;
+    log_line("dual class list count=%u first=%u second=%u", count, next[0].id, count > 1 ? next[1].id : 0);
+}
+
+}  // namespace
+
+void syn_features_set_log(FILE* log) {
+    g_log = log;
+}
+
+void syn_features_load(const char* root) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/WoWExt.bin", root);
+    load_container(path);
+}
+
+void syn_features_before() {
+    if (!g_register && !bind_lua()) {
+        return;
+    }
+    register_natives();
+}
+
+void syn_features_after() {
+    if (!g_natives_ready || g_scripts_ready) {
+        return;
+    }
+    if (!g_classes_ready && g_script_wait++ < 400) {
+        return;
+    }
+    run_scripts();
+}
+
+void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size) {
+    if (cmd == 14 && rest) {
+        adopt_classes(rest, size);
+    }
+}

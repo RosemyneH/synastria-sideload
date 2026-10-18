@@ -24,7 +24,7 @@ This bridge does the startup work the DLL does, in-process:
 
 `probe` only reads the caches. A bare `./launch.sh` hard-links the Release client (`WowClient64.release`, `-O3 -DNDEBUG`) into the Synastria directory and starts it with `LD_PRELOAD=build/libsynastria.so`. The client finds `Data` from `/proc/self/exe`, and a symlink would point back at `bin/Linux`. `realmlist` is already `game.synastria.org`.
 
-The bridge raises `RealmConnection::HandleCharEnum` from 10 characters to 20, then runs `WoWExt3.bin` once `CharacterSelectCharacterFrame` exists. That is the login-screen patch.
+The bridge raises the character list cap to 20 and runs `WoWExt3.bin` for the login buttons. `WoWExt.bin` is the container of the rest of the Synastria Lua (perks, dual-class bars, class colors). Those scripts are executed after opcode `0x4B8` command 14 delivers the class list. `CMCGetMultiClassEnabled` stays on so character creation can pick two classes. The other `Custom_*` and `ItemLoc*` names are registered so those scripts can call them.
 
 Log: `Logs/synastria-sideload.log` next to the bins.
 

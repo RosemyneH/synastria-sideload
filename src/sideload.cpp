@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "features.h"
 #include "sym.h"
 
 #include <cstdarg>
@@ -190,6 +191,7 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
     for (uint32_t i = 0; i < show && used + 3 < sizeof(hex); ++i) {
         used += static_cast<size_t>(snprintf(hex + used, sizeof(hex) - used, "%02x", rest[i]));
     }
+    syn_features_packet(cmd, rest, left);
     log_line("pkt opcode=%#x cmd=%u token=%u rest=%u %s", msg_id, cmd, g_token, left, hex);
 
     if (cmd == 2 && rest && left >= 1 && g_token == 0 && rest[0] != 0) {
@@ -299,10 +301,13 @@ void ensure_lua() {
 int hook_process(void* self, uint32_t time, void* msg, int unused) {
     if (g_depth++ == 0) {
         ensure_handler();
+        syn_features_before();
         ensure_lua();
     }
     int result = g_process(self, time, msg, unused);
-    --g_depth;
+    if (--g_depth == 0) {
+        syn_features_after();
+    }
     return result;
 }
 
@@ -402,8 +407,10 @@ void install() {
 
     snprintf(logs, sizeof(logs), "%s/Logs/synastria-sideload.log", root);
     g_log = fopen(logs, "w");
+    syn_features_set_log(g_log);
 
     syn_load_cache(root, &g_cache);
+    syn_features_load(root);
     prepare_login_lua();
     describe_cache();
     log_line("pid %d", getpid());
