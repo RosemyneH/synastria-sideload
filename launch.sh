@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PLAY="${SYNASTRIA_ROOT:-$HOME/Games/Synastria}"
-CLIENT="${WOWDECOMP_BIN:-$HOME/Repos/wowdecomp/bin/Linux/WowClient64}"
+CLIENT="${WOWDECOMP_BIN:-$HOME/Repos/wowdecomp/bin/Linux/WowClient64.release}"
 
 make -C "$ROOT" -s
 

@@ -15,6 +15,12 @@ namespace {
 // ʕ •ᴥ•ʔ✿ CMSG_UNUSED5. WoWExt.dll registers this with ClientServices::SetMessageHandler. ✿ ʕ •ᴥ•ʔ
 constexpr int kOpcode = 0x4B8;
 constexpr uint32_t kReplyTag = 0x36;
+constexpr int kLuaGlobals = -10002;
+constexpr uint8_t kCharacterCap = 20;
+constexpr char kLoginGuard[] =
+    "if SynastriaLoginPatch then return end\n"
+    "if not _G[\"CharacterSelectCharacterFrame\"] then return end\n"
+    "SynastriaLoginPatch = true\n";
 
 constexpr uint8_t kPrologue[] = {
     0x41, 0x56,
@@ -37,6 +43,9 @@ using FinalizeFn = void (*)(void*);
 using GetU8Fn = void (*)(void*, uint8_t*);
 using GetContextFn = void* (*)();
 using ExecuteFn = void (*)(const char*, const char*, const char*);
+using LuaGetFieldFn = void (*)(void*, int, const char*);
+using LuaToBooleanFn = int (*)(void*, int);
+using LuaSetTopFn = void (*)(void*, int);
 
 struct StoreView {
     void* vptr;
@@ -57,6 +66,11 @@ FinalizeFn g_finalize = nullptr;
 GetU8Fn g_get_u8 = nullptr;
 GetContextFn g_lua_context = nullptr;
 ExecuteFn g_lua_execute = nullptr;
+LuaGetFieldFn g_lua_getfield = nullptr;
+LuaToBooleanFn g_lua_toboolean = nullptr;
+LuaSetTopFn g_lua_settop = nullptr;
+char* g_login_lua = nullptr;
+int g_lua_tries = 0;
 void** g_connection = nullptr;
 ProcessFn g_process = nullptr;
 
@@ -201,16 +215,85 @@ void ensure_handler() {
     log_line("registered handler for opcode %#x", kOpcode);
 }
 
+bool patch_character_cap() {
+    void* target = nullptr;
+    if (!syn_resolve("_ZN15RealmConnection14HandleCharEnumEjjP10CDataStore", &target)) {
+        log_line("missing HandleCharEnum");
+        return false;
+    }
+
+    auto* code = static_cast<uint8_t*>(target);
+    uint8_t* slot = nullptr;
+    for (size_t i = 0; i + 4 < 0x80; ++i) {
+        if (code[i] == 0x3c && code[i + 1] == 0x0a && code[i + 2] == 0x0f && code[i + 3] == 0x86) {
+            slot = code + i + 1;
+            break;
+        }
+    }
+    if (!slot) {
+        log_line("character cap compare not found at %p", target);
+        log_stderr("synastria: character cap patch missed");
+        return false;
+    }
+
+    long page = sysconf(_SC_PAGESIZE);
+    uintptr_t start = reinterpret_cast<uintptr_t>(slot);
+    uintptr_t page_start = start & ~(static_cast<uintptr_t>(page) - 1);
+    if (mprotect(reinterpret_cast<void*>(page_start), static_cast<size_t>(page), PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        log_line("mprotect character cap failed");
+        return false;
+    }
+    *slot = kCharacterCap;
+    mprotect(reinterpret_cast<void*>(page_start), static_cast<size_t>(page), PROT_READ | PROT_EXEC);
+    log_line("character list cap %u at %p", kCharacterCap, slot);
+    log_stderr("synastria: character list cap %u", kCharacterCap);
+    return true;
+}
+
+void prepare_login_lua() {
+    if (!g_cache.lua) {
+        return;
+    }
+    size_t guard = sizeof(kLoginGuard) - 1;
+    g_login_lua = static_cast<char*>(malloc(guard + g_cache.lua_bytes + 1));
+    if (!g_login_lua) {
+        return;
+    }
+    memcpy(g_login_lua, kLoginGuard, guard);
+    memcpy(g_login_lua + guard, g_cache.lua, g_cache.lua_bytes);
+    g_login_lua[guard + g_cache.lua_bytes] = 0;
+}
+
 void ensure_lua() {
-    if (g_lua_ready || !g_cache.lua || !g_lua_context || !g_lua_execute) {
+    if (g_lua_ready || !g_login_lua || !g_lua_context || !g_lua_execute) {
         return;
     }
-    if (!g_lua_context()) {
+    void* state = g_lua_context();
+    if (!state) {
         return;
     }
-    g_lua_execute(g_cache.lua, "WoWExt3.bin", "synastria");
+    if (g_lua_tries++ > 200) {
+        g_lua_ready = true;
+        log_line("login patch gave up waiting for CharacterSelect");
+        return;
+    }
+
+    g_lua_execute(g_login_lua, "WoWExt3.bin", "synastria");
+    if (!g_lua_getfield || !g_lua_toboolean || !g_lua_settop) {
+        g_lua_ready = true;
+        log_line("executed WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
+        return;
+    }
+
+    g_lua_getfield(state, kLuaGlobals, "SynastriaLoginPatch");
+    int applied = g_lua_toboolean(state, -1);
+    g_lua_settop(state, -2);
+    if (!applied) {
+        return;
+    }
     g_lua_ready = true;
-    log_line("executed WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
+    log_line("login patch applied from WoWExt3.bin (%zu bytes)", g_cache.lua_bytes);
+    log_stderr("synastria: login patch applied");
 }
 
 int hook_process(void* self, uint32_t time, void* msg, int unused) {
@@ -246,7 +329,10 @@ bool resolve_all() {
         && bind_symbol("_ZN10CDataStore8FinalizeEv", reinterpret_cast<void**>(&g_finalize))
         && bind_symbol("_ZN10CDataStore3GetERh", reinterpret_cast<void**>(&g_get_u8))
         && bind_symbol("_Z22FrameScript_GetContextv", reinterpret_cast<void**>(&g_lua_context))
-        && bind_symbol("_Z19FrameScript_ExecutePKcS0_S0_", reinterpret_cast<void**>(&g_lua_execute));
+        && bind_symbol("_Z19FrameScript_ExecutePKcS0_S0_", reinterpret_cast<void**>(&g_lua_execute))
+        && bind_symbol("lua_getfield", reinterpret_cast<void**>(&g_lua_getfield))
+        && bind_symbol("lua_toboolean", reinterpret_cast<void**>(&g_lua_toboolean))
+        && bind_symbol("lua_settop", reinterpret_cast<void**>(&g_lua_settop));
 }
 
 const char* root_dir() {
@@ -318,6 +404,7 @@ void install() {
     g_log = fopen(logs, "w");
 
     syn_load_cache(root, &g_cache);
+    prepare_login_lua();
     describe_cache();
     log_line("pid %d", getpid());
     log_stderr("synastria: cache %s pid %d", (g_cache.bin_ok && g_cache.bin2_ok && g_cache.lua_ok) ? "ok" : "incomplete", getpid());
@@ -334,6 +421,7 @@ void install() {
         log_line("hooked NetClient::ProcessMessage at %p", process);
         log_stderr("synastria: hooked opcode %#x", kOpcode);
     }
+    patch_character_cap();
 }
 
 }  // namespace
@@ -349,5 +437,7 @@ static void syn_destruct() {
         fclose(g_log);
         g_log = nullptr;
     }
+    free(g_login_lua);
+    g_login_lua = nullptr;
     syn_free_cache(&g_cache);
 }

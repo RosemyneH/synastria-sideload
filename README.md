@@ -22,7 +22,9 @@ This bridge does the startup work the DLL does, in-process:
 ./launch.sh
 ```
 
-`probe` only reads the caches. A bare `./launch.sh` hard-links `WowClient64` into the Synastria directory (the client finds `Data` from `/proc/self/exe`, and a symlink resolves back to `bin/Linux`), then starts it with `LD_PRELOAD=build/libsynastria.so`. `realmlist` is already `game.synastria.org`.
+`probe` only reads the caches. A bare `./launch.sh` hard-links the Release client (`WowClient64.release`, `-O3 -DNDEBUG`) into the Synastria directory and starts it with `LD_PRELOAD=build/libsynastria.so`. The client finds `Data` from `/proc/self/exe`, and a symlink would point back at `bin/Linux`. `realmlist` is already `game.synastria.org`.
+
+The bridge raises `RealmConnection::HandleCharEnum` from 10 characters to 20, then runs `WoWExt3.bin` once `CharacterSelectCharacterFrame` exists. That is the login-screen patch.
 
 Log: `Logs/synastria-sideload.log` next to the bins.
 
