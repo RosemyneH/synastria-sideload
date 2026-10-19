@@ -1152,6 +1152,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_source_count.inc"
 #include "natives/custom_get_spell_desc.inc"
 #include "natives/custom_get_spell_cooldown.inc"
+#include "natives/custom_get_highest_spell.inc"
 #include "natives/custom_get_item_count.inc"
 #include "natives/custom_get_quest_req.inc"
 #include "natives/custom_get_prequest.inc"
@@ -1185,7 +1186,7 @@ const char* kStubs[] = {
     "Custom_GetSpellTools", "Custom_GetSpellEffect",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
-    "Custom_GetGossipQuests", "Custom_GetHighestLearnedSpell", "Custom_TranslateMapPosition",
+    "Custom_GetGossipQuests", "Custom_TranslateMapPosition",
     "Custom_AddTrackObjLoc", "Custom_RemoveTrackObjLoc",
     "Custom_ClearTrackObjLoc", "Custom_CalculateMapMarker",
     "Custom_GetMapFilteredResults", "Custom_SendQuestTrack", "Custom_GetPendingEvents",
@@ -1425,6 +1426,7 @@ void register_natives() {
     register_cmc("ItemLocSourceIsInZone", native_itemloc_source_in_zone);
     register_cmc("Custom_GetSpellDesc", native_get_spell_desc);
     register_cmc("Custom_GetSpellCooldown", native_get_spell_cooldown);
+    register_cmc("Custom_GetHighestLearnedSpell", native_get_highest_spell);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
