@@ -413,10 +413,6 @@ int cmc_create_set(void* state) {
     return 0;
 }
 
-int stub_native(void*) {
-    return 0;
-}
-
 int g_tradeskill_filter = 0;
 
 int native_tradeskill_filter(void* state) {
@@ -1245,13 +1241,10 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_transmog_enchant.inc"
 #include "natives/custom_get_transmog_item.inc"
 #include "natives/custom_fixup_transmog_id.inc"
+#include "natives/custom_transmog_export.inc"
 #include "natives/custom_loot_filter_export_rule.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
-
-const char* kStubs[] = {
-    "Custom_TransmogExport",
-};
 
 bool bind_lua() {
     return syn_resolve("_Z28FrameScript_RegisterFunctionPKcPFiP9lua_StateE", reinterpret_cast<void**>(&g_register))
@@ -1578,17 +1571,15 @@ void register_natives() {
     register_cmc("Custom_GetTransmogEnchant", native_get_transmog_enchant);
     register_cmc("Custom_GetTransmogItem", native_get_transmog_item);
     register_cmc("Custom_FixupTransmogId", native_fixup_transmog_id);
+    register_cmc("Custom_TransmogExport", native_transmog_export);
     register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
     register_cmc("Custom_GetAllTrackObjLoc", native_get_all_track_obj_loc);
     register_cmc("Custom_GetMapMarker", native_get_map_marker);
     register_cmc("Custom_GetTotalMapMarkerCount", native_get_total_map_marker_count);
     register_cmc("Custom_SetMapMarkerOption", native_set_map_marker_option);
-    for (const char* name : kStubs) {
-        g_register(name, stub_native);
-    }
     zone_cache_off();
     g_natives_ready = true;
-    log_line("registered CMC natives and %zu custom stubs", sizeof(kStubs) / sizeof(kStubs[0]));
+    log_line("registered CMC natives");
 }
 
 bool frame_present(const char* name) {
