@@ -431,6 +431,53 @@ int native_tradeskill_filter(void* state) {
     return 1;
 }
 
+double game_num(int cat, int key) {
+    GameCat* cat_row = game_cat(cat);
+    if (!cat_row) {
+        return 0;
+    }
+    auto found = cat_row->nums.find(key);
+    return found == cat_row->nums.end() ? 0 : found->second;
+}
+
+int native_false(void* state) {
+    g_push_bool(state, 0);
+    return 1;
+}
+
+int native_item_tags(void* state) {
+    int id = arg_int(state, 1);
+    g_push_num(state, game_num(16, id));
+    g_push_num(state, game_num(17, id));
+    g_push_num(state, game_num(20, id));
+    return 3;
+}
+
+int native_item_extra(void* state) {
+    g_push_num(state, 0);
+    g_push_num(state, 0);
+    (void)state;
+    return 2;
+}
+
+int native_affix_mask(void* state) {
+    for (int i = 0; i < 5; ++i) {
+        g_push_num(state, 0);
+    }
+    return 5;
+}
+
+int native_attuned_count(void* state) {
+    if (arg_int(state, 1) == 1) {
+        g_push_num(state, 0);
+        return 1;
+    }
+    for (int i = 0; i < 4; ++i) {
+        g_push_num(state, 0);
+    }
+    return 4;
+}
+
 int native_obj_loaded(void* state) {
     g_push_num(state, g_obj_loaded ? 1 : 0);
     return 1;
@@ -781,7 +828,6 @@ void load_item_loc(const uint8_t* data, size_t size) {
 }
 
 const char* kStubs[] = {
-    "GetItemExtraCustom", "GetItemTagsCustom", "GetItemAffixMask",
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
     "Custom_SetLootFilter", "Custom_SetLootFilterRule", "Custom_SetLootFilterRuleEntry",
     "Custom_SetLootFilterOptions", "Custom_SetLootFilterRuleEnabled", "Custom_LootFilterResetToDefault",
@@ -1036,12 +1082,15 @@ void register_natives() {
     register_cmc("GetSafeInvokeQueue", stub_native);
     register_cmc("CalculateAttunableCount", native_zero);
     register_cmc("CalculateAttunableAffixCount", native_zero);
-    register_cmc("CalculateAttunedCount", native_zero);
+    register_cmc("CalculateAttunedCount", native_attuned_count);
     register_cmc("CalculateAttunedAffixCount", native_zero);
     register_cmc("CalculateAttunedCountHigh", native_zero);
     register_cmc("CanAttuneItemHelperEx", native_zero);
-    register_cmc("HasAttunedAnyVariantEx", native_zero);
-    register_cmc("IsAttunableBySomeone", native_zero);
+    register_cmc("HasAttunedAnyVariantEx", native_false);
+    register_cmc("IsAttunableBySomeone", native_false);
+    register_cmc("GetItemTagsCustom", native_item_tags);
+    register_cmc("GetItemExtraCustom", native_item_extra);
+    register_cmc("GetItemAffixMask", native_affix_mask);
     register_cmc("SetItemTrackerClassMask", native_zero);
     register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
     register_cmc("Custom_GetAllTrackObjLoc", stub_native);
