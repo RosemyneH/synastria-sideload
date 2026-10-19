@@ -68,6 +68,18 @@ target_include_directories(WowClient
         ${CMAKE_SOURCE_DIR}
 )
 
+set(SYNASTRIA_DIR ${CMAKE_SOURCE_DIR}/..)
+target_sources(WowClient PRIVATE
+    ${SYNASTRIA_DIR}/src/sideload.cpp
+    ${SYNASTRIA_DIR}/src/sym.cpp
+    ${SYNASTRIA_DIR}/src/cache.cpp
+    ${SYNASTRIA_DIR}/src/features.cpp
+    ${SYNASTRIA_DIR}/src/embed_bind.cpp
+    ${SYNASTRIA_DIR}/third_party/lz4/lz4.c
+)
+target_include_directories(WowClient PRIVATE ${SYNASTRIA_DIR}/third_party/lz4)
+target_compile_definitions(WowClient PRIVATE SYNASTRIA_EMBED=1)
+
 if (WIN32)
     target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
     target_link_libraries(WowClient PRIVATE dbghelp)

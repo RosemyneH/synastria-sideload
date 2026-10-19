@@ -2,14 +2,36 @@
 
 #include <cstdio>
 #include <cstring>
+
+#if !defined(_WIN32)
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
+struct Bind {
+    const char* name;
+    void* addr;
+};
+
+Bind g_binds[192];
+int g_bind_count = 0;
+
+bool bind_find(const char* name, void** out) {
+    for (int i = 0; i < g_bind_count; ++i) {
+        if (strcmp(g_binds[i].name, name) == 0 && g_binds[i].addr) {
+            *out = g_binds[i].addr;
+            return true;
+        }
+    }
+    return false;
+}
+
+#if !defined(_WIN32)
 uint64_t load_bias() {
     char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
@@ -41,10 +63,26 @@ uint64_t load_bias() {
     fclose(maps);
     return base;
 }
+#endif
 
 }  // namespace
 
+void syn_bind(const char* name, void* addr) {
+    if (!name || !addr || g_bind_count >= static_cast<int>(sizeof(g_binds) / sizeof(g_binds[0]))) {
+        return;
+    }
+    g_binds[g_bind_count].name = name;
+    g_binds[g_bind_count].addr = addr;
+    ++g_bind_count;
+}
+
 int syn_resolve_each(const char* name, void** out, int cap) {
+#if defined(_WIN32)
+    (void)name;
+    (void)out;
+    (void)cap;
+    return 0;
+#else
     if (!out || cap <= 0) {
         return 0;
     }
@@ -101,9 +139,15 @@ int syn_resolve_each(const char* name, void** out, int cap) {
 
     munmap(map, static_cast<size_t>(st.st_size));
     return found;
+#endif
 }
 
 bool syn_resolve(const char* name, void** out) {
     *out = nullptr;
-    return syn_resolve_each(name, out, 1) == 1;
+#if defined(__linux__)
+    if (syn_resolve_each(name, out, 1) == 1) {
+        return true;
+    }
+#endif
+    return bind_find(name, out);
 }

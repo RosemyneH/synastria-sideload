@@ -207,11 +207,13 @@ LuaSetTopFn g_lua_settop = nullptr;
 using LuaToStringFn = const char* (*)(void*, int, size_t*);
 LuaToStringFn g_lua_tolstring = nullptr;
 char* g_login_lua = nullptr;
+void** g_connection = nullptr;
+#if !defined(SYNASTRIA_EMBED)
 IdleFn g_glue_idle = nullptr;
 IdleFn g_game_idle = nullptr;
-void** g_connection = nullptr;
 ProcessFn g_process = nullptr;
 HandleDataFn g_handle_data = nullptr;
+#endif
 
 SynCache g_cache{};
 FILE* g_log = nullptr;
@@ -246,7 +248,9 @@ void log_stderr(const char* fmt, ...) {
     fputc('\n', stderr);
 }
 
+#if !defined(SYNASTRIA_EMBED)
 int hook_process(void* self, uint32_t time, void* msg, int unused);
+#endif
 
 #if !defined(SYNASTRIA_EMBED)
 void write_abs_jmp(uint8_t* at, void* dest) {

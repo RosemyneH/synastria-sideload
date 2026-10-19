@@ -1,4 +1,5 @@
 #include "CGlueMgr.h"
+#include "synastria_bridge.h"
 #include <cmath>
 #include <cstdarg>
 #include <cstdlib>
@@ -1211,6 +1212,7 @@ static void MaybeAutoLogin() {
 // VERIFY: 5e7db3b8 manual
 // OFFSET: 0x004DAB40
 int32_t CGlueMgr::Idle(const void* data, void* param) {
+    synastria_on_glue_idle();
     MaybeAutoLogin();
 
     if (g_theGxDevicePtr->StereoEnabled()) {
