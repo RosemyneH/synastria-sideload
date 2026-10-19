@@ -445,7 +445,10 @@ struct ItemRow {
     uint8_t klass = 0;
     uint8_t quality = 0;
     uint8_t sub = 0;
+    uint8_t sound = 0xff;
+    uint8_t material = 0xff;
     uint8_t inv = 0;
+    uint8_t sheath = 0;
     uint8_t flags = 0;
     uint8_t stat_type = 0xff;
     uint16_t class_mask = 0;
@@ -1258,14 +1261,14 @@ void load_item_db(const uint8_t* data, size_t size) {
         row.quality = in.u8();
         row.sub = (head & 0x02) ? in.u8() : 0;
         if (head & 0x04) {
-            in.u8();
+            row.sound = in.u8();
         }
         if (head & 0x08) {
-            in.u8();
+            row.material = in.u8();
         }
         row.inv = (head & 0x10) ? in.u8() : 0;
         if (head & 0x20) {
-            in.u8();
+            row.sheath = in.u8();
         }
         if (head & 0x40) {
             row.class_mask = in.u16();
@@ -2145,6 +2148,70 @@ void adopt_classes(const uint8_t* rest, uint32_t size) {
     log_line("dual class list count=%u first=%u second=%u", count, next[0].id, count > 1 ? next[1].id : 0);
 }
 
+void publish_item_records() {
+    void* found = nullptr;
+    if (!syn_resolve("g_itemDB", &found) || !found) {
+        log_line("item db missing");
+        return;
+    }
+    auto* table = static_cast<uint8_t*>(found);
+    int32_t max_id = 0;
+    int32_t min_id = 0;
+    int32_t count = 0;
+    memcpy(&count, table + 0x0c, 4);
+    memcpy(&max_id, table + 0x10, 4);
+    memcpy(&min_id, table + 0x14, 4);
+    void** by_id = nullptr;
+    memcpy(&by_id, table + 0x30, sizeof(by_id));
+    if (!by_id || max_id < min_id) {
+        log_line("item db empty max=%d min=%d", max_id, min_id);
+        return;
+    }
+    int need_max = max_id;
+    int limit = static_cast<int>(g_items.size());
+    for (int id = max_id + 1; id < limit; ++id) {
+        if (g_items[static_cast<size_t>(id)].on) {
+            need_max = id;
+        }
+    }
+    if (need_max > max_id) {
+        size_t grown_n = static_cast<size_t>(need_max - min_id + 1);
+        size_t old_n = static_cast<size_t>(max_id - min_id + 1);
+        void** grown = new void*[grown_n]();
+        memcpy(grown, by_id, old_n * sizeof(void*));
+        by_id = grown;
+        memcpy(table + 0x30, &by_id, sizeof(by_id));
+        memcpy(table + 0x10, &need_max, 4);
+        max_id = need_max;
+    }
+    int added = 0;
+    int written = 0;
+    for (int id = min_id; id <= max_id && id < limit; ++id) {
+        const ItemRow& row = g_items[static_cast<size_t>(id)];
+        if (!row.on) {
+            continue;
+        }
+        auto* rec = static_cast<int32_t*>(by_id[id - min_id]);
+        if (!rec) {
+            rec = new int32_t[8]();
+            by_id[id - min_id] = rec;
+            ++count;
+            ++added;
+        }
+        rec[0] = id;
+        rec[1] = static_cast<int8_t>(row.klass);
+        rec[2] = static_cast<int8_t>(row.sub);
+        rec[3] = static_cast<int8_t>(row.sound);
+        rec[4] = static_cast<int8_t>(row.material);
+        rec[5] = static_cast<int32_t>(row.display);
+        rec[6] = static_cast<int8_t>(row.inv);
+        rec[7] = static_cast<int8_t>(row.sheath);
+        ++written;
+    }
+    memcpy(table + 0x0c, &count, 4);
+    log_line("item db wrote %d added %d max=%d", written, added, max_id);
+}
+
 }  // namespace
 
 void syn_features_set_log(FILE* log) {
@@ -2267,6 +2334,7 @@ void syn_features_reset() {
 
 void syn_features_world() {
     g_in_world = true;
+    publish_item_records();
 }
 
 void syn_features_harvest() {
