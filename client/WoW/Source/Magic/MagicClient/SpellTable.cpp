@@ -173,6 +173,11 @@ int32_t CGSkillInfo::GetSkillCostField(const SkillRaceClassInfoRec* info, int32_
 // VERIFY: 6585c0df manual
 // OFFSET: 0x00811F20
 static bool SpellTableIsBookTab(int32_t race, int32_t classId, int32_t skillLine) {
+    SkillLineRec* line = g_skillLineDB.GetRecord(skillLine);
+    // ʕ •ᴥ•ʔ✿ Category 7 is a class tree. Secondary Survival is the campfire skill. ✿ ʕ •ᴥ•ʔ
+    if (!line || line->m_categoryID != 7) {
+        return false;
+    }
     const SkillRaceClassInfoRec* info = SpellTableLookupInfoOne(race, classId, skillLine);
     return info && !(info->m_flags & 0x80);
 }

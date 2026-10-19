@@ -272,21 +272,28 @@ void CGSpellBook::ClearSpells() {
     }
 }
 
-static int32_t AppendSpellTab(int32_t spellId, int32_t* skillOut) {
-    int32_t skillLine = 0;
+static int32_t SpellBookSkillLine(int32_t spellId) {
     CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
-
-    if (player) {
-        SkillLineAbilityRec* ability = player->LookupAbility(spellId);
-
-        if (ability) {
-            const SkillRaceClassInfoRec* info = SpellTableLookupInfo(player->m_unit->m_unitFieldBytes0[0], player->m_unit->m_unitFieldBytes0[1], ability->m_skillLine);
-
-            if (info && !(info->m_flags & 0x80)) {
-                skillLine = info->m_skillID;
-            }
-        }
+    if (!player) {
+        return 0;
     }
+    SkillLineAbilityRec* ability = player->LookupAbility(spellId);
+    if (!ability) {
+        return 0;
+    }
+    const SkillRaceClassInfoRec* info = SpellTableLookupInfo(player->m_unit->m_unitFieldBytes0[0], player->m_unit->m_unitFieldBytes0[1], ability->m_skillLine);
+    if (!info || (info->m_flags & 0x80)) {
+        return 0;
+    }
+    SkillLineRec* line = g_skillLineDB.GetRecord(info->m_skillID);
+    if (!line || line->m_categoryID != 7) {
+        return 0;
+    }
+    return info->m_skillID;
+}
+
+static int32_t AppendSpellTab(int32_t spellId, int32_t* skillOut) {
+    int32_t skillLine = SpellBookSkillLine(spellId);
 
     int32_t tab = -1;
 
@@ -1183,20 +1190,7 @@ int32_t GetSpellSlot(int32_t spellId, int32_t petSpell) {
 // VERIFY: 317d9288 manual
 // OFFSET: 0x0053C5F0
 static uint32_t GetSpellSkillInfoIndex(int32_t spellId) {
-    int32_t skillLine = 0;
-    CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
-
-    if (player) {
-        SkillLineAbilityRec* ability = player->LookupAbility(spellId);
-
-        if (ability) {
-            const SkillRaceClassInfoRec* info = SpellTableLookupInfo(player->m_unit->m_unitFieldBytes0[0], player->m_unit->m_unitFieldBytes0[1], ability->m_skillLine);
-
-            if (info && !(info->m_flags & 0x80)) {
-                skillLine = info->m_skillID;
-            }
-        }
-    }
+    int32_t skillLine = SpellBookSkillLine(spellId);
 
     uint32_t i = 0;
 
@@ -2299,20 +2293,7 @@ void CGSpellBook::DelKnownSpell(int32_t spellId, int32_t notify) {
     }
 
     if (removed) {
-        int32_t skillLine = 0;
-        CGPlayer_C* player = ClntObjMgrGetActivePlayerObj();
-
-        if (player) {
-            SkillLineAbilityRec* ability = player->LookupAbility(spellId);
-
-            if (ability) {
-                const SkillRaceClassInfoRec* info = SpellTableLookupInfo(player->m_unit->m_unitFieldBytes0[0], player->m_unit->m_unitFieldBytes0[1], ability->m_skillLine);
-
-                if (info && info->m_flags >= 0) {
-                    skillLine = info->m_skillID;
-                }
-            }
-        }
+        int32_t skillLine = SpellBookSkillLine(spellId);
 
         for (uint32_t i = 0; i < s_numSkillInfos; i++) {
             SpellBookSkillInfo* skill = s_skillInfos.m_data[i];
