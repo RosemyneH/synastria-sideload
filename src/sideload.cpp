@@ -405,6 +405,39 @@ void send_presence() {
     log_stderr("synastria: announced extension");
 }
 
+void run_server_script() {
+    if (g_pending_script.empty() || !g_lua_execute) {
+        return;
+    }
+    std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\n";
+    wrapped += g_pending_script;
+    wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
+    g_lua_execute(wrapped.c_str(), "WoWExtPkt", "synastria");
+    if (g_lua_context && g_lua_getfield && g_lua_tolstring && g_lua_settop) {
+        void* state = g_lua_context();
+        if (state) {
+            g_lua_getfield(state, kLuaGlobals, "SynastriaScriptError");
+            const char* err = g_lua_tolstring(state, -1, nullptr);
+            if (err && err[0]) {
+                log_line("server script error: %s", err);
+            }
+            g_lua_settop(state, -2);
+        }
+    }
+    if (g_pending_script.size() < 180) {
+        std::string text = g_pending_script;
+        for (char& bite : text) {
+            if (bite == '\n' || bite == '\r') {
+                bite = ' ';
+            }
+        }
+        log_line("server script %zu bytes %s", g_pending_script.size(), text.c_str());
+    } else {
+        log_line("server script %zu bytes", g_pending_script.size());
+    }
+    g_pending_script.clear();
+}
+
 void send_cache_reply(const uint32_t* ids, int count) {
     if (!can_send() || count < 0) {
         return;
@@ -498,9 +531,7 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
             g_pending_script.assign(reinterpret_cast<const char*>(rest + off), n);
             log_line("server script queued %u bytes", n);
             if (syn_features_scripts_done() && g_lua_execute) {
-                g_lua_execute(g_pending_script.c_str(), "WoWExtPkt", "synastria");
-                log_line("server script %zu bytes", g_pending_script.size());
-                g_pending_script.clear();
+                run_server_script();
             }
         }
     }
@@ -845,9 +876,7 @@ void pump_main(bool in_game) {
         if (syn_features_scripts_done()) {
             send_presence();
             if (!g_pending_script.empty() && g_lua_execute) {
-                g_lua_execute(g_pending_script.c_str(), "WoWExtPkt", "synastria");
-                log_line("server script %zu bytes", g_pending_script.size());
-                g_pending_script.clear();
+                run_server_script();
             }
         }
     }

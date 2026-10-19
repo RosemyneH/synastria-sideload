@@ -1980,7 +1980,7 @@ void run_scripts() {
         return;
     }
     if (!g_perk_lua.empty()) {
-        std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\n";
+        std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\nPerkMgrPerks = PerkMgrPerks or {}\n";
         wrapped += g_perk_lua;
         wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
         g_exec(wrapped.c_str(), "WoWExt.bin", "perks");
@@ -2028,8 +2028,59 @@ void run_scripts() {
         log_line("in-game lua did not install, will retry");
         return;
     }
+    g_exec(
+        "if not SynastriaViewHook then\n"
+        "SynastriaViewHook = true\n"
+        "local function open_view(name)\n"
+        "  if name ~= \"View Attuned Items\" then return end\n"
+        "  SynastriaLastSpell = name\n"
+        "  if not OpenAttuneSummary then\n"
+        "    SynastriaSpellOpenError = \"OpenAttuneSummary missing\"\n"
+        "    return\n"
+        "  end\n"
+        "  local ok, err = pcall(OpenAttuneSummary)\n"
+        "  if not ok then SynastriaSpellOpenError = tostring(err) end\n"
+        "end\n"
+        "hooksecurefunc(\"CastSpell\", function(index, bookType)\n"
+        "  open_view(GetSpellName(index, bookType))\n"
+        "end)\n"
+        "hooksecurefunc(\"UseAction\", function(slot)\n"
+        "  local kind, id = GetActionInfo(slot)\n"
+        "  if kind ~= \"spell\" or not id then return end\n"
+        "  open_view(GetSpellName(id, BOOKTYPE_SPELL) or (GetSpellInfo and GetSpellInfo(id)))\n"
+        "end)\n"
+        "end\n",
+        "WoWExt.bin", "view");
     g_scripts_ready = true;
     log_line("executed %zu WoWExt.bin lua containers errors=%d", g_scripts.size(), errors);
+}
+
+void poll_spell_click() {
+    if (!g_context || !g_get_field || !g_to_str || !g_set_top || !g_exec) {
+        return;
+    }
+    void* state = g_context();
+    if (!state) {
+        return;
+    }
+    g_get_field(state, kLuaGlobals, "SynastriaLastSpell");
+    const char* name = g_to_str(state, -1, nullptr);
+    static std::string seen;
+    if (name && name[0] && seen != name) {
+        seen = name;
+        log_line("spellbook click %s", seen.c_str());
+    }
+    g_set_top(state, -2);
+    g_get_field(state, kLuaGlobals, "SynastriaSpellOpenError");
+    const char* err = g_to_str(state, -1, nullptr);
+    if (err && err[0]) {
+        std::string copy = err;
+        g_set_top(state, -2);
+        g_exec("SynastriaSpellOpenError = nil", "WoWExt.bin", "view");
+        log_line("spell open error: %s", copy.c_str());
+        return;
+    }
+    g_set_top(state, -2);
 }
 
 bool read_u32(const uint8_t* data, size_t size, size_t& offset, uint32_t& out) {
@@ -3117,6 +3168,33 @@ void publish_spell_records() {
                 }
                 continue;
             }
+            if (type == 13) {
+                if (at + 16 > plain_size) {
+                    break;
+                }
+                uint32_t spell = 0;
+                int32_t recovery = 0;
+                int32_t category = 0;
+                int32_t category_recovery = 0;
+                memcpy(&spell, cursor + at, 4);
+                memcpy(&recovery, cursor + at + 4, 4);
+                memcpy(&category, cursor + at + 8, 4);
+                memcpy(&category_recovery, cursor + at + 12, 4);
+                at += 16;
+                if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit)) {
+                    int id = static_cast<int>(spell);
+                    if (recovery >= 0) {
+                        spell_put_i32(table, id, 0x74, recovery);
+                    }
+                    if (category >= 0) {
+                        spell_put_i32(table, id, 0x04, category);
+                    }
+                    if (category_recovery >= 0) {
+                        spell_put_i32(table, id, 0x78, category_recovery);
+                    }
+                }
+                continue;
+            }
             if (type == 14) {
                 if (at + 12 > plain_size) {
                     break;
@@ -3131,6 +3209,36 @@ void publish_spell_records() {
                 int slot = spell_field_at(field);
                 if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit) && slot >= 0 && slot + 4 <= static_cast<int>(kSpellBytes)) {
                     spell_put_i32(table, static_cast<int>(spell), slot, static_cast<int32_t>(value));
+                }
+                continue;
+            }
+            if (type == 16) {
+                if (at + 10 > plain_size) {
+                    break;
+                }
+                uint32_t spell = 0;
+                uint32_t value = 0;
+                uint8_t op = cursor[at + 4];
+                uint8_t index = cursor[at + 5];
+                memcpy(&spell, cursor + at, 4);
+                memcpy(&value, cursor + at + 6, 4);
+                at += 10;
+                int slot = 0x10 + static_cast<int>(index) * 4;
+                if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit) && index < 8) {
+                    int id = static_cast<int>(spell);
+                    uint8_t* row = spell_plain(table, id);
+                    int32_t current = 0;
+                    if (row) {
+                        memcpy(&current, row + slot, 4);
+                    }
+                    if (op == 0) {
+                        current = static_cast<int32_t>(value);
+                    } else if (op == 1) {
+                        current |= static_cast<int32_t>(value);
+                    } else if (op == 2) {
+                        current &= ~static_cast<int32_t>(value);
+                    }
+                    spell_put_i32(table, id, slot, current);
                 }
                 continue;
             }
@@ -3231,6 +3339,22 @@ void publish_spell_records() {
         }
     }
     install_skill_abilities();
+    for (int id : {80100, 80189}) {
+        uint8_t* row = spell_plain(table, id);
+        if (!row) {
+            continue;
+        }
+        auto i32 = [&](int at) {
+            int32_t value = 0;
+            memcpy(&value, row + at, 4);
+            return value;
+        };
+        char* spell_name = nullptr;
+        memcpy(&spell_name, row + kSpellNameAt, sizeof(spell_name));
+        log_line("spell %d %s attr=%#x ex=%#x cat=%d rec=%d crec=%d eff=%d icon=%d active=%d",
+                 id, spell_name ? spell_name : "", i32(0x10), i32(0x14), i32(0x04), i32(0x74), i32(0x78),
+                 i32(0x11c), i32(0x214), i32(0x218));
+    }
     log_line("spell db names=%d text=%d icons=%d copies=%d auras=%d skills=%zu perks=%d",
              names, described, icons, copies, auras, g_skill_adds.size(), g_perk_count);
 }
@@ -3446,7 +3570,11 @@ int syn_features_class_id(int index) {
 }
 
 void syn_features_after() {
-    if (!g_natives_ready || g_scripts_ready) {
+    if (g_scripts_ready) {
+        poll_spell_click();
+        return;
+    }
+    if (!g_natives_ready) {
         return;
     }
     if (!g_classes_ready && !(g_in_world && g_script_wait > 30)) {
