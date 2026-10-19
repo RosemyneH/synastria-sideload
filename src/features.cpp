@@ -1208,6 +1208,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_map_filtered.inc"
 #include "natives/custom_get_profession_recipe_info.inc"
 #include "natives/custom_lock_item.inc"
+#include "natives/custom_unlock_item.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1218,7 +1219,7 @@ const char* kStubs[] = {
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
-    "Custom_Internal_SetResultFromUseContainerItem", "Custom_UnlockItem",
+    "Custom_Internal_SetResultFromUseContainerItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeFromCraftedItem",
@@ -1496,6 +1497,7 @@ void register_natives() {
     register_cmc("Custom_GetMapFilteredResults", native_get_map_filtered);
     register_cmc("Custom_GetProfessionRecipeInfo", native_get_profession_recipe_info);
     register_cmc("Custom_LockItem", native_lock_item);
+    register_cmc("Custom_UnlockItem", native_unlock_item);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
