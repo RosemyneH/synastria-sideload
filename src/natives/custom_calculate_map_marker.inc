@@ -296,9 +296,36 @@ bool map_marker_source_ok(uint8_t type) {
     return skip[index] == 0;
 }
 
+// ʕ •ᴥ•ʔ✿ GetWorldPosition indexes m_continents. A count with no data pointer faults during enter world. ✿ ʕ •ᴥ•ʔ
+bool map_marker_world_ready() {
+    static int32_t* current = nullptr;
+    static uint32_t* count = nullptr;
+    static void** data = nullptr;
+    static bool bound = false;
+    if (!bound) {
+        bound = true;
+        void* found = nullptr;
+        if (syn_resolve("_ZN10CGWorldMap18m_currentContinentE", &found)) {
+            current = static_cast<int32_t*>(found);
+        }
+        found = nullptr;
+        if (syn_resolve("_ZN10CGWorldMap12m_continentsE", &found)) {
+            count = reinterpret_cast<uint32_t*>(static_cast<char*>(found) + 4);
+            data = reinterpret_cast<void**>(static_cast<char*>(found) + 8);
+        }
+    }
+    if (!current || !count || !data) {
+        return false;
+    }
+    if (*current >= 0 && (*count == 0 || *data == nullptr)) {
+        return false;
+    }
+    return true;
+}
+
 bool map_marker_project(int16_t x, int16_t y, uint16_t zone, float* out_x, float* out_y) {
     MapMarkerWorldFn world = map_marker_world();
-    if (!world) {
+    if (!world || !map_marker_world_ready()) {
         return false;
     }
     // ʕ •ᴥ•ʔ✿ Spawn yards go through CGWorldMap::GetWorldPosition on the map the client has open. ✿ ʕ •ᴥ•ʔ

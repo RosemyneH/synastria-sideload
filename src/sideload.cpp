@@ -5,6 +5,8 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <execinfo.h>
+#include <signal.h>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -672,7 +674,43 @@ constexpr uint8_t kGameIdle[] = {
     0x4c, 0x89, 0xb4, 0x24, 0xe8, 0x0b, 0x00, 0x00,
 };
 
+struct sigaction g_prev_segv{};
+
+void syn_segv(int sig, siginfo_t* info, void* ctx) {
+    dprintf(2, "synastria: fault addr=%p code=%d\n", info ? info->si_addr : nullptr, info ? info->si_code : 0);
+    void* frames[48];
+    int count = backtrace(frames, 48);
+    backtrace_symbols_fd(frames, count, 2);
+    if (g_prev_segv.sa_flags & SA_SIGINFO) {
+        if (g_prev_segv.sa_sigaction) {
+            g_prev_segv.sa_sigaction(sig, info, ctx);
+        }
+        return;
+    }
+    if (g_prev_segv.sa_handler && g_prev_segv.sa_handler != SIG_DFL && g_prev_segv.sa_handler != SIG_IGN) {
+        g_prev_segv.sa_handler(sig);
+        return;
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+void install_fault_trace() {
+    static bool armed = false;
+    if (armed) {
+        return;
+    }
+    struct sigaction next{};
+    next.sa_sigaction = syn_segv;
+    sigemptyset(&next.sa_mask);
+    next.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGSEGV, &next, &g_prev_segv) == 0) {
+        armed = true;
+    }
+}
+
 void pump_main(bool in_game) {
+    install_fault_trace();
     static int seen_glue = 0;
     static int seen_game = 0;
     if (in_game) {
