@@ -1200,6 +1200,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_tradeskill_tools.inc"
 #include "natives/custom_queue_event.inc"
 #include "natives/custom_get_pending_events_ex.inc"
+#include "natives/custom_queue_event_ex.inc"
 #include "natives/custom_get_entity_extra_int.inc"
 #include "natives/custom_get_entity_extra_float.inc"
 #include "natives/custom_set_entity_extra_int.inc"
@@ -1229,7 +1230,6 @@ const char* kStubs[] = {
     "Custom_Internal_SetResultFromUseContainerItem",
     "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes",
-    "Custom_QueueEventEx",
 };
 
 bool bind_lua() {
@@ -1494,6 +1494,7 @@ void register_natives() {
     register_cmc("Custom_GetQuestItemId", native_get_quest_item_id);
     register_cmc("Custom_GetTradeSkillTools", native_get_tradeskill_tools);
     register_cmc("Custom_QueueEvent", native_queue_event);
+    register_cmc("Custom_QueueEventEx", native_queue_event_ex);
     register_cmc("Custom_GetSkillIndex", native_get_skill_index);
     register_cmc("Custom_GetGossipQuests", native_get_gossip_quests);
     register_cmc("Custom_GetMerchantItem", native_get_merchant_item);
