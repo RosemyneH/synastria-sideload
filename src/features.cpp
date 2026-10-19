@@ -1189,6 +1189,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_clear_track_obj_loc.inc"
 #include "natives/custom_get_all_track_obj_loc.inc"
 #include "natives/custom_calculate_map_marker.inc"
+#include "natives/custom_get_total_map_marker_count.inc"
 #include "natives/custom_is_player_near.inc"
 #include "natives/custom_is_container_soulbound.inc"
 #include "natives/custom_get_pending_events.inc"
@@ -1232,13 +1233,14 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_item_select_count.inc"
 #include "natives/custom_set_item_select_filter.inc"
 #include "natives/custom_get_item_select.inc"
+#include "natives/custom_clear_dressup_facing.inc"
 #include "natives/custom_loot_filter_export_rule.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
 
 const char* kStubs[] = {
     "Custom_LootFilterImport", "Custom_LootFilterImportRule",
-    "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
+    "Custom_SetDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_FixupTransmogId",
 };
 
@@ -1540,6 +1542,7 @@ void register_natives() {
     register_cmc("Custom_GetItemSelectCount", native_get_item_select_count);
     register_cmc("Custom_SetItemSelectFilter", native_set_item_select_filter);
     register_cmc("Custom_GetItemSelect", native_get_item_select);
+    register_cmc("Custom_ClearDressupFacing", native_clear_dressup_facing);
     register_cmc("Custom_LockItem", native_lock_item);
     register_cmc("Custom_UnlockItem", native_unlock_item);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
@@ -1563,7 +1566,7 @@ void register_natives() {
     register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
     register_cmc("Custom_GetAllTrackObjLoc", native_get_all_track_obj_loc);
     register_cmc("Custom_GetMapMarker", native_zero);
-    register_cmc("Custom_GetTotalMapMarkerCount", native_zero);
+    register_cmc("Custom_GetTotalMapMarkerCount", native_get_total_map_marker_count);
     register_cmc("Custom_SetMapMarkerOption", native_zero);
     for (const char* name : kStubs) {
         g_register(name, stub_native);
