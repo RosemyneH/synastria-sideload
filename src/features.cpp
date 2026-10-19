@@ -1114,6 +1114,7 @@ void load_obj_loc(const uint8_t* data, size_t size) {
 }
 
 void load_quest_data(const uint8_t* data, size_t size);
+void load_itemloc_obj_at(const uint8_t* data, size_t size);
 
 void load_item_loc(const uint8_t* data, size_t size) {
     if (size < 4) {
@@ -1126,6 +1127,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
     g_itemloc_loaded = version == 5 && !g_itemloc_names.empty();
     log_line("WoWExtItemLoc.bin %zu bytes version %u names %zu", size, version, g_itemloc_names.size());
     load_quest_data(data, size);
+    load_itemloc_obj_at(data, size);
 }
 
 #include "natives/custom_get_current_zone.inc"
@@ -1134,6 +1136,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_quest_name.inc"
 #include "natives/custom_is_on_quest.inc"
 #include "natives/custom_get_quest_data.inc"
+#include "natives/itemloc_obj_at.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1145,7 +1148,7 @@ const char* kStubs[] = {
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
     "ItemLocGetSourceCount", "ItemLocGetSourceAt", "ItemLocSetSourceSort", "ItemLocGetSourceSort",
-    "ItemLocGetObjCount", "ItemLocGetObjAt", "ItemLocSetObjSort", "ItemLocFixupObjId",
+    "ItemLocGetObjCount", "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocItemIsInZone", "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
     "Custom_GetPrequest",
@@ -1387,6 +1390,7 @@ void register_natives() {
     register_cmc("Custom_GetQuestName", native_get_quest_name);
     register_cmc("Custom_IsOnQuest", native_is_on_quest);
     register_cmc("Custom_GetQuestData", native_get_quest_data);
+    register_cmc("ItemLocGetObjAt", native_itemloc_obj_at);
     register_cmc("Custom_GetSpellDesc", native_empty);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
