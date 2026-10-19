@@ -928,10 +928,6 @@ int native_item_info(void* state) {
     return 11;
 }
 
-int native_item_id_from_name(void* state) {
-    return 0;
-}
-
 void collect_cstr(const uint8_t* data, size_t size, size_t start, std::vector<std::string>& out) {
     size_t i = start;
     while (i < size) {
@@ -1208,6 +1204,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_loot_filter.inc"
 #include "natives/custom_get_item_vars.inc"
 #include "natives/custom_has_acquired_item.inc"
+#include "natives/custom_get_item_id_from_name.inc"
+#include "natives/custom_unregister_use_container_item.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
@@ -1230,7 +1228,7 @@ const char* kStubs[] = {
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_FixupTransmogId",
-    "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
+    "Custom_RegisterForUseContainerItem",
     "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes",
 };
@@ -1498,6 +1496,7 @@ void register_natives() {
     register_cmc("Custom_GetLootFilter", native_get_loot_filter);
     register_cmc("Custom_GetItemVars", native_get_item_vars);
     register_cmc("Custom_HasAcquiredItem", native_has_acquired_item);
+    register_cmc("Custom_UnregisterForUseContainerItem", native_unregister_use_container_item);
     register_cmc("Custom_GetQuestItemId", native_get_quest_item_id);
     register_cmc("Custom_GetTradeSkillTools", native_get_tradeskill_tools);
     register_cmc("Custom_QueueEvent", native_queue_event);
