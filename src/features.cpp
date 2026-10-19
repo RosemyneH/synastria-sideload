@@ -1118,6 +1118,7 @@ void load_itemloc_item_in_multi_zone(const uint8_t* data, size_t size);
 void load_itemloc_source_in_zone(const uint8_t* data, size_t size);
 void load_itemloc_fixup_obj_id(const uint8_t* data, size_t size);
 void load_itemloc_all_objs_in_zone(const uint8_t* data, size_t size);
+void load_itemloc_all_items_in_zone(const uint8_t* data, size_t size);
 void load_itemloc_sources_compacted(const uint8_t* data, size_t size);
 void load_have_any_reward(const uint8_t* data, size_t size);
 
@@ -1141,6 +1142,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
     load_itemloc_source_in_zone(data, size);
     load_itemloc_fixup_obj_id(data, size);
     load_itemloc_all_objs_in_zone(data, size);
+    load_itemloc_all_items_in_zone(data, size);
     load_itemloc_sources_compacted(data, size);
     load_have_any_reward(data, size);
 }
@@ -1176,6 +1178,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_prequest.inc"
 #include "natives/custom_get_quest_can_accept.inc"
 #include "natives/itemloc_all_objs_in_zone.inc"
+#include "natives/itemloc_all_items_in_zone.inc"
 #include "natives/itemloc_sources_compacted.inc"
 #include "natives/custom_get_cursor_item.inc"
 #include "natives/custom_get_item_guid.inc"
@@ -1194,7 +1197,6 @@ const char* kStubs[] = {
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_GetQuestItemId",
-    "ItemLocGetAllItemsInZone",
     "Custom_IsContainerItemSoulbound",
     "Custom_IsItemEquipMgr",
     "Custom_GetItemLinkBySlot", "Custom_IsPlayerNear",
@@ -1450,6 +1452,7 @@ void register_natives() {
     register_cmc("ItemLocItemIsInMultiZone", native_itemloc_item_in_multi_zone);
     register_cmc("ItemLocSourceIsInZone", native_itemloc_source_in_zone);
     register_cmc("ItemLocGetAllObjsInZone", native_itemloc_all_objs_in_zone);
+    register_cmc("ItemLocGetAllItemsInZone", native_itemloc_all_items_in_zone);
     register_cmc("ItemLocGetSourcesCompacted", native_itemloc_sources_compacted);
     register_cmc("Custom_GetCurrentCursorItem", native_get_cursor_item);
     register_cmc("Custom_GetItemGuid", native_get_item_guid);
