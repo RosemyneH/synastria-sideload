@@ -1146,6 +1146,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_obj_at.inc"
 #include "natives/itemloc_obj_count.inc"
 #include "natives/itemloc_source_at.inc"
+#include "natives/itemloc_get_source_sort.inc"
 #include "natives/custom_get_current_zone_our.inc"
 #include "natives/custom_get_quest_completed.inc"
 #include "natives/itemloc_source_count.inc"
@@ -1167,7 +1168,7 @@ const char* kStubs[] = {
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
-    "ItemLocSetSourceSort", "ItemLocGetSourceSort",
+    "ItemLocSetSourceSort",
     "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
@@ -1411,6 +1412,7 @@ void register_natives() {
     register_cmc("ItemLocGetObjAt", native_itemloc_obj_at);
     register_cmc("ItemLocGetObjCount", native_itemloc_obj_count);
     register_cmc("ItemLocGetSourceAt", native_itemloc_source_at);
+    register_cmc("ItemLocGetSourceSort", native_itemloc_get_source_sort);
     register_cmc("Custom_GetQuestCompleted", native_get_quest_completed);
     register_cmc("ItemLocGetSourceCount", native_itemloc_source_count);
     register_cmc("Custom_GetItemCount", native_get_item_count);
