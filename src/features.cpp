@@ -2290,6 +2290,11 @@ void spell_store(SpellTable& table, int id) {
         return;
     }
     spell_fill_strings(row);
+    // ʕ •ᴥ•ʔ✿ Bit 0x80 hides the spell and, with 0x100, makes GetSpellLink return nothing. ✿ ʕ •ᴥ•ʔ
+    int32_t attributes = 0;
+    memcpy(&attributes, row + 0x10, 4);
+    attributes &= ~0x180;
+    memcpy(row + 0x10, &attributes, 4);
     if (!table.compress) {
         table.by_id[id - table.min_id] = row;
         return;

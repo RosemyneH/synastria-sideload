@@ -1019,6 +1019,86 @@ void hook_skill_lookup() {
     log_line("hooked spell ability lookup at %p", target);
 }
 
+using SkillInfoFn = void* (*)(int, int, int);
+SkillInfoFn g_skill_info = nullptr;
+
+extern "C" void* syn_skill_info(int race, int class_id, int skill_id) {
+    if (!g_skill_info) {
+        return nullptr;
+    }
+    void* hit = g_skill_info(race, class_id, skill_id);
+    if (hit) {
+        return hit;
+    }
+    int count = syn_features_class_count();
+    bool mine = false;
+    for (int i = 0; i < count; ++i) {
+        if (syn_features_class_id(i) == class_id) {
+            mine = true;
+            break;
+        }
+    }
+    if (!mine) {
+        return nullptr;
+    }
+    for (int i = 0; i < count; ++i) {
+        int other = syn_features_class_id(i);
+        if (!other || other == class_id) {
+            continue;
+        }
+        hit = g_skill_info(race, other, skill_id);
+        if (hit) {
+            return hit;
+        }
+    }
+    return nullptr;
+}
+
+void hook_skill_info() {
+    void* target = nullptr;
+    if (!syn_resolve("_Z20SpellTableLookupInfoiii", &target)) {
+        log_line("missing SpellTableLookupInfo");
+        return;
+    }
+    auto* code = static_cast<uint8_t*>(target);
+    if (code[0] != 0x8b || code[1] != 0x05 || code[6] != 0x41 || code[7] != 0x89 || code[8] != 0xf0) {
+        log_line("skill info prologue changed");
+        return;
+    }
+    int32_t disp = 0;
+    memcpy(&disp, code + 2, 4);
+    uintptr_t abs = reinterpret_cast<uintptr_t>(code + 6) + static_cast<intptr_t>(disp);
+    long page = sysconf(_SC_PAGESIZE);
+    auto* tramp = static_cast<uint8_t*>(mmap(nullptr, static_cast<size_t>(page), PROT_READ | PROT_WRITE | PROT_EXEC,
+                                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (tramp == MAP_FAILED) {
+        return;
+    }
+    uint8_t* at = tramp;
+    *at++ = 0x49;
+    *at++ = 0xbb;
+    memcpy(at, &abs, 8);
+    at += 8;
+    *at++ = 0x8b;
+    *at++ = 0x03;
+    memcpy(at, code + 6, 10);
+    at += 10;
+    write_abs_jmp(at, code + 16);
+
+    uintptr_t start = reinterpret_cast<uintptr_t>(code);
+    uintptr_t page_start = start & ~(static_cast<uintptr_t>(page) - 1);
+    if (mprotect(reinterpret_cast<void*>(page_start), static_cast<size_t>(page) * 2, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        return;
+    }
+    uint8_t patch[16];
+    memset(patch, 0x90, sizeof(patch));
+    write_abs_jmp(patch, reinterpret_cast<void*>(syn_skill_info));
+    memcpy(code, patch, sizeof(patch));
+    mprotect(reinterpret_cast<void*>(page_start), static_cast<size_t>(page) * 2, PROT_READ | PROT_EXEC);
+    g_skill_info = reinterpret_cast<SkillInfoFn>(tramp);
+    log_line("hooked skill line info at %p", target);
+}
+
 void hook_item_records() {
     void* copies[24];
     int count = syn_resolve_each(
@@ -1187,6 +1267,7 @@ void install() {
 #if !defined(SYNASTRIA_EMBED)
     hook_item_records();
     hook_skill_lookup();
+    hook_skill_info();
     void* process = nullptr;
     if (!syn_resolve("_ZN9NetClient14ProcessMessageEjP10CDataStorei", &process)) {
         log_line("missing ProcessMessage");
