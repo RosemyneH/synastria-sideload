@@ -456,15 +456,9 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
         send_ack();
         log_line("ack opcode=%#x tag=%#x token=%u", kOpcode, kReplyTag, g_token);
     }
-    if (cmd == 20 && rest) {
+    if (cmd == 21 && rest && left >= 4) {
         uint32_t stamp = 0;
-        if (left >= 4) {
-            memcpy(&stamp, rest, 4);
-        } else if (left >= 2) {
-            uint16_t half = 0;
-            memcpy(&half, rest, 2);
-            stamp = half;
-        }
+        memcpy(&stamp, rest, 4);
         send_sync_ack(stamp);
         log_line("login sync ack stamp=%#x", stamp);
     }

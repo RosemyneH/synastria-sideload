@@ -44,6 +44,7 @@ struct ClassSlot {
 };
 
 ClassSlot g_classes[kMaxClasses];
+std::vector<uint8_t> g_class_talents[kMaxClasses];
 int g_class_count = 0;
 int g_create_alt = 0;
 bool g_classes_ready = false;
@@ -391,6 +392,8 @@ int cmc_color(void* state) {
     return 4;
 }
 
+void apply_saved_talents();
+
 int cmc_talents(void* state) {
     int index = arg_int(state, 1);
     int slot = index - 1;
@@ -399,6 +402,7 @@ int cmc_talents(void* state) {
         return 1;
     }
     set_num(22, 2, index);
+    apply_saved_talents();
     syn_net_notify(7, static_cast<uint32_t>(slot), nullptr);
     g_push_bool(state, 1);
     return 1;
@@ -1965,8 +1969,107 @@ void load_container(const char* path) {
     log_line("WoWExt.bin containers lua=%zu joined=%d other=%d", g_scripts.size(), bundles, other_count);
 }
 
+struct TalentApply {
+    void (*leave)() = nullptr;
+    void (*enter)() = nullptr;
+    void (*update)(void*) = nullptr;
+    void (*ctor)(void*) = nullptr;
+    void (*dtor)(void*) = nullptr;
+    void (*put)(void*, uint8_t) = nullptr;
+    bool ready = false;
+};
+
+TalentApply& talent_apply() {
+    static TalentApply api;
+    if (api.ready) {
+        return api;
+    }
+    api.ready = true;
+    void* found = nullptr;
+    if (syn_resolve("_ZN12CGTalentInfo10LeaveWorldEv", &found)) {
+        api.leave = reinterpret_cast<void (*)()>(found);
+    }
+    if (syn_resolve("_ZN12CGTalentInfo10EnterWorldEv", &found)) {
+        api.enter = reinterpret_cast<void (*)()>(found);
+    }
+    if (syn_resolve("_ZN12CGTalentInfo16UpdateTalentDataEP10CDataStore", &found)) {
+        api.update = reinterpret_cast<void (*)(void*)>(found);
+    }
+    if (syn_resolve("_ZN10CDataStoreC1Ev", &found)) {
+        api.ctor = reinterpret_cast<void (*)(void*)>(found);
+    }
+    if (syn_resolve("_ZN10CDataStoreD1Ev", &found)) {
+        api.dtor = reinterpret_cast<void (*)(void*)>(found);
+    }
+    if (syn_resolve("_ZN10CDataStore3PutEh", &found)) {
+        api.put = reinterpret_cast<void (*)(void*, uint8_t)>(found);
+    }
+    return api;
+}
+
+void apply_saved_talents() {
+    int slot = static_cast<int>(game_num(22, 2) + 0.01) - 1;
+    if (slot < 0) {
+        slot = 0;
+    }
+    if (slot >= g_class_count || g_class_talents[slot].empty()) {
+        return;
+    }
+    TalentApply& api = talent_apply();
+    if (!api.update || !api.ctor || !api.dtor || !api.put) {
+        return;
+    }
+    if (g_in_world && api.leave && api.enter) {
+        api.leave();
+        api.enter();
+    }
+    alignas(16) unsigned char raw[64];
+    memset(raw, 0, sizeof(raw));
+    api.ctor(raw);
+    for (uint8_t byte : g_class_talents[slot]) {
+        api.put(raw, byte);
+    }
+    api.update(raw);
+    api.dtor(raw);
+    log_line("applied class talent slot=%d bytes=%zu", slot, g_class_talents[slot].size());
+}
+
+// ʕ •ᴥ•ʔ✿ Command 14 type 2 is one talent block per class slot. ✿ ʕ •ᴥ•ʔ
+void store_class_talents(const uint8_t* rest, uint32_t size) {
+    if (size < 2) {
+        return;
+    }
+    uint8_t count = rest[1];
+    uint32_t off = 2;
+    for (uint8_t i = 0; i < count; ++i) {
+        if (off + 5 > size) {
+            return;
+        }
+        uint8_t index = rest[off];
+        uint32_t nbytes = 0;
+        memcpy(&nbytes, rest + off + 1, 4);
+        off += 5;
+        if (nbytes > 0x10000u || off + nbytes > size) {
+            return;
+        }
+        if (index < kMaxClasses) {
+            g_class_talents[index].assign(rest + off, rest + off + nbytes);
+            log_line("class talent slot=%u bytes=%u", index, nbytes);
+        }
+        off += nbytes;
+    }
+    apply_saved_talents();
+}
+
 void adopt_classes(const uint8_t* rest, uint32_t size) {
-    if (size < 2 || rest[0] != 1) {
+    if (!rest || size < 2) {
+        return;
+    }
+    if (rest[0] == 2) {
+        store_class_talents(rest, size);
+        return;
+    }
+    if (rest[0] != 1) {
         return;
     }
     uint8_t count = rest[1];
@@ -1985,6 +2088,9 @@ void adopt_classes(const uint8_t* rest, uint32_t size) {
     memcpy(g_classes, next, sizeof(next));
     g_class_count = count;
     g_classes_ready = true;
+    for (std::vector<uint8_t>& blob : g_class_talents) {
+        blob.clear();
+    }
     log_line("dual class list count=%u first=%u second=%u", count, next[0].id, count > 1 ? next[1].id : 0);
 }
 
