@@ -2344,6 +2344,22 @@ struct PktReader {
         }
         return value;
     }
+
+    // ʕ •ᴥ•ʔ✿ Game-data blobs store the high 7 bits first. A normal varint swaps every multi-byte key. ✿ ʕ •ᴥ•ʔ
+    uint32_t be7() {
+        uint32_t value = 0;
+        for (int i = 0; i < 5 && ok; ++i) {
+            uint8_t bite = u8();
+            if (!ok) {
+                return 0;
+            }
+            value = (value << 7) | (bite & 0x7fu);
+            if ((bite & 0x80) == 0) {
+                break;
+            }
+        }
+        return value;
+    }
 };
 
 struct DataPair {
@@ -2382,7 +2398,7 @@ bool decode_pairs(PktReader& in, std::vector<DataPair>& out) {
     } else if (key_fmt == 2) {
         uint32_t acc = 0;
         while (in.ok) {
-            uint32_t delta = in.uleb();
+            uint32_t delta = in.be7();
             if (!in.ok || delta == 0) {
                 break;
             }
@@ -2454,7 +2470,7 @@ bool decode_pairs(PktReader& in, std::vector<DataPair>& out) {
         } else if (value_fmt == 2) {
             wide = static_cast<double>(static_cast<int16_t>(in.u16())) * 0.01;
         } else if (value_fmt == 4) {
-            wide = in.uleb();
+            wide = in.be7();
         } else if (value_fmt == 5) {
             in.take(&pair.bits, 8);
             if (!in.ok) {
