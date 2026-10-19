@@ -1148,6 +1148,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_spell_desc.inc"
 #include "natives/custom_get_item_count.inc"
 #include "natives/custom_get_quest_req.inc"
+#include "natives/custom_get_prequest.inc"
 #include "natives/itemloc_item_in_zone.inc"
 
 const char* kStubs[] = {
@@ -1163,7 +1164,6 @@ const char* kStubs[] = {
     "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
-    "Custom_GetPrequest",
     "Custom_GetQuestCanAccept",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
     "Custom_IsItemSoulbound", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
@@ -1409,6 +1409,7 @@ void register_natives() {
     register_cmc("ItemLocGetSourceCount", native_itemloc_source_count);
     register_cmc("Custom_GetItemCount", native_get_item_count);
     register_cmc("Custom_GetQuestReq", native_get_quest_req);
+    register_cmc("Custom_GetPrequest", native_get_prequest);
     register_cmc("ItemLocItemIsInZone", native_itemloc_item_in_zone);
     register_cmc("Custom_GetSpellDesc", native_get_spell_desc);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
