@@ -44,6 +44,9 @@ inline int syn_clz(unsigned int value) {
 
 namespace {
 
+std::string g_perk_lua;
+int g_perk_count = 0;
+
 constexpr uint32_t kMagic = 0x2838C53Au;
 constexpr int kLuaGlobals = -10002;
 constexpr int kMaxClasses = 10;
@@ -1976,6 +1979,23 @@ void run_scripts() {
     if (g_scripts_ready || !g_exec) {
         return;
     }
+    if (!g_perk_lua.empty()) {
+        std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\n";
+        wrapped += g_perk_lua;
+        wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
+        g_exec(wrapped.c_str(), "WoWExt.bin", "perks");
+        if (g_context && g_get_field && g_to_str && g_set_top) {
+            void* state = g_context();
+            if (state) {
+                g_get_field(state, kLuaGlobals, "SynastriaScriptError");
+                const char* err = g_to_str(state, -1, nullptr);
+                if (err && err[0]) {
+                    log_line("perk lua error: %s", err);
+                }
+                g_set_top(state, -2);
+            }
+        }
+    }
     if (g_scripts.empty()) {
         log_line("container scripts were empty");
         g_scripts_ready = true;
@@ -2480,6 +2500,221 @@ struct SkillAdd {
 };
 
 std::vector<SkillAdd> g_skill_adds;
+int spell_field_at(uint32_t offset) {
+    // ʕ •ᴥ•ʔ✿ Four string pointers grow by 4 bytes on the 64-bit spell row. ✿ ʕ •ᴥ•ʔ
+    if (offset >= 0x230) {
+        offset += 0x10;
+    }
+    return static_cast<int>(offset);
+}
+
+bool read_varint(const uint8_t* data, int size, int& cursor, uint32_t& out) {
+    out = 0;
+    int shift = 0;
+    while (cursor < size && shift < 28) {
+        uint8_t bite = data[cursor++];
+        out |= static_cast<uint32_t>(bite & 0x7f) << shift;
+        if ((bite & 0x80) == 0) {
+            return true;
+        }
+        shift += 7;
+    }
+    return false;
+}
+
+void lua_quote(std::string& out, const uint8_t* text, int length) {
+    out.push_back('"');
+    for (int i = 0; i < length; ++i) {
+        unsigned char bite = text[i];
+        if (bite == '\\' || bite == '"') {
+            out.push_back('\\');
+            out.push_back(static_cast<char>(bite));
+        } else if (bite == '\n') {
+            out += "\\n";
+        } else if (bite == '\r') {
+            continue;
+        } else if (bite >= 32) {
+            out.push_back(static_cast<char>(bite));
+        }
+    }
+    out.push_back('"');
+}
+
+bool read_counted(const uint8_t* data, int size, int& cursor, const uint8_t*& text, uint16_t& length) {
+    if (cursor + 2 > size) {
+        return false;
+    }
+    memcpy(&length, data + cursor, 2);
+    cursor += 2;
+    if (cursor + length > size) {
+        return false;
+    }
+    text = data + cursor;
+    cursor += length;
+    return true;
+}
+
+bool read_perk(const uint8_t* data, int size, int& cursor) {
+    if (cursor + 4 > size) {
+        return false;
+    }
+    uint32_t flags = 0;
+    memcpy(&flags, data + cursor, 4);
+    cursor += 4;
+    auto u8 = [&](uint32_t& out) {
+        if (cursor >= size) {
+            return false;
+        }
+        out = data[cursor++];
+        return true;
+    };
+    auto u16 = [&](uint32_t& out) {
+        if (cursor + 2 > size) {
+            return false;
+        }
+        uint16_t value = 0;
+        memcpy(&value, data + cursor, 2);
+        cursor += 2;
+        out = value;
+        return true;
+    };
+    auto u32 = [&](uint32_t& out) {
+        if (cursor + 4 > size) {
+            return false;
+        }
+        memcpy(&out, data + cursor, 4);
+        cursor += 4;
+        return true;
+    };
+    uint32_t id = 0;
+    uint32_t icon = 0;
+    uint32_t req = 0;
+    uint32_t group = 0;
+    uint32_t info = 0;
+    uint32_t cat = 0;
+    uint32_t sort = 0;
+    uint32_t perk_flags = 4;
+    uint32_t options = 0;
+    uint32_t unlock = 0;
+    int x = 0x7f;
+    int y = 0x7f;
+    if (flags & 1u) {
+        if (!u16(id)) return false;
+    } else if (!u32(id)) {
+        return false;
+    }
+    if (flags & 2u) {
+        if (!u16(icon)) return false;
+    } else if (!u32(icon)) {
+        return false;
+    }
+    if (flags & 4u) {
+        if (!u16(req)) return false;
+    } else if (flags & 8u) {
+        if (!u32(req)) return false;
+    }
+    if (flags & 0x10u) {
+        if (!u16(group)) return false;
+    } else if (flags & 0x20u) {
+        if (!u32(group)) return false;
+    }
+    if ((flags & 0x40u) && !u32(info)) {
+        return false;
+    }
+    if (flags & 0x80u) {
+        if (!u32(cat)) return false;
+    } else if (!u8(cat)) {
+        return false;
+    }
+    if (flags & 0x100u) {
+        if (!u32(sort)) return false;
+    } else if (flags & 0x200u) {
+        if (cursor >= size) return false;
+        sort = static_cast<uint32_t>(static_cast<int8_t>(data[cursor++]));
+    }
+    if (flags & 0x400u) {
+        if (cursor >= size) return false;
+        ++cursor;
+    } else if (flags & 0x800u) {
+        if (cursor + 4 > size) return false;
+        cursor += 4;
+    }
+    if (flags & 0x1000u) {
+        if (!u16(unlock)) return false;
+    } else if (flags & 0x2000u) {
+        if (!u32(unlock)) return false;
+    }
+    if (flags & 0x4000u) {
+        if (!read_varint(data, size, cursor, perk_flags)) return false;
+    }
+    if (flags & 0x8000u) {
+        if (!read_varint(data, size, cursor, options)) return false;
+    }
+    if (flags & 0x10000u) {
+        uint32_t extra = 0;
+        if (!read_varint(data, size, cursor, extra)) return false;
+    }
+    if (flags & 0x20000u) {
+        if (cursor + 2 > size) return false;
+        x = static_cast<int8_t>(data[cursor++]);
+        y = static_cast<int8_t>(data[cursor++]);
+    }
+    if (cursor + 2 > size) {
+        return false;
+    }
+    uint16_t mask = 0;
+    memcpy(&mask, data + cursor, 2);
+    cursor += 2;
+    for (int bit = 0; bit < 16; ++bit) {
+        if ((mask & (1u << bit)) && (cursor += 4) > size) {
+            return false;
+        }
+    }
+    const uint8_t* name = nullptr;
+    const uint8_t* desc = nullptr;
+    uint16_t name_n = 0;
+    uint16_t desc_n = 0;
+    if (!read_counted(data, size, cursor, name, name_n) || !read_counted(data, size, cursor, desc, desc_n)) {
+        return false;
+    }
+    if (id == 0) {
+        return true;
+    }
+    std::string line = "PerkMgrPerks[";
+    line += std::to_string(id);
+    line += "]={id=";
+    line += std::to_string(id);
+    line += ",icon=";
+    line += std::to_string(icon);
+    line += ",name=";
+    lua_quote(line, name, name_n);
+    line += ",info=";
+    line += std::to_string(info);
+    line += ",req=";
+    line += std::to_string(req);
+    line += ",sg=";
+    line += std::to_string(group);
+    line += ",flags=";
+    line += std::to_string(perk_flags);
+    line += ",options=";
+    line += std::to_string(options);
+    line += ",sort=";
+    line += std::to_string(static_cast<int32_t>(sort));
+    line += ",cat=";
+    line += std::to_string(cat);
+    line += ",desc=";
+    lua_quote(line, desc, desc_n);
+    line += ",x=";
+    line += std::to_string(x);
+    line += ",y=";
+    line += std::to_string(y);
+    line += ",unlock=";
+    line += std::to_string(unlock);
+    line += ",lvflags=0,levels={{amounts={0,0,0,0,0},amounts2={0,0,0,0,0}}}}\n";
+    g_perk_lua += line;
+    ++g_perk_count;
+    return true;
+}
 
 void spell_copy_from(SpellTable& table, int dest, int source) {
     if (dest <= 0 || source <= 0 || dest == source || dest >= kSpellIdLimit || source >= kSpellIdLimit) {
@@ -2749,6 +2984,8 @@ void publish_spell_records() {
     }
     done = true;
     g_skill_adds.clear();
+    g_perk_lua.clear();
+    g_perk_count = 0;
     char path[1024];
     snprintf(path, sizeof(path), "%s/WoWExt.bin", g_root);
     FILE* file = fopen(path, "rb");
@@ -2880,6 +3117,43 @@ void publish_spell_records() {
                 }
                 continue;
             }
+            if (type == 14) {
+                if (at + 12 > plain_size) {
+                    break;
+                }
+                uint32_t spell = 0;
+                uint32_t field = 0;
+                uint32_t value = 0;
+                memcpy(&spell, cursor + at, 4);
+                memcpy(&field, cursor + at + 4, 4);
+                memcpy(&value, cursor + at + 8, 4);
+                at += 12;
+                int slot = spell_field_at(field);
+                if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit) && slot >= 0 && slot + 4 <= static_cast<int>(kSpellBytes)) {
+                    spell_put_i32(table, static_cast<int>(spell), slot, static_cast<int32_t>(value));
+                }
+                continue;
+            }
+            if (type == 15) {
+                if (at + 4 > plain_size) {
+                    break;
+                }
+                uint32_t perk_count = 0;
+                memcpy(&perk_count, cursor + at, 4);
+                at += 4;
+                bool perks_ok = true;
+                for (uint32_t perk = 0; perk < perk_count; ++perk) {
+                    if (!read_perk(cursor, plain_size, at)) {
+                        perks_ok = false;
+                        break;
+                    }
+                }
+                if (!perks_ok) {
+                    break;
+                }
+                at = plain_size;
+                continue;
+            }
             if (type == 11) {
                 if (at + 9 > plain_size) {
                     break;
@@ -2957,8 +3231,8 @@ void publish_spell_records() {
         }
     }
     install_skill_abilities();
-    log_line("spell db names=%d text=%d icons=%d copies=%d auras=%d skills=%zu",
-             names, described, icons, copies, auras, g_skill_adds.size());
+    log_line("spell db names=%d text=%d icons=%d copies=%d auras=%d skills=%zu perks=%d",
+             names, described, icons, copies, auras, g_skill_adds.size(), g_perk_count);
 }
 
 void publish_item_records() {
