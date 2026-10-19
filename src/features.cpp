@@ -1205,6 +1205,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_source_in_zone.inc"
 #include "natives/custom_translate_map_position.inc"
 #include "natives/custom_get_map_filtered.inc"
+#include "natives/custom_get_profession_recipe_info.inc"
+#include "natives/custom_lock_item.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1215,10 +1217,10 @@ const char* kStubs[] = {
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
-    "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
+    "Custom_Internal_SetResultFromUseContainerItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
-    "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
+    "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe",
     "Custom_GetPendingEventsEx", "Custom_QueueEventEx",
 };
@@ -1491,6 +1493,8 @@ void register_natives() {
     register_cmc("Custom_GetSpellTools", native_get_spell_tools);
     register_cmc("Custom_TranslateMapPosition", native_translate_map_position);
     register_cmc("Custom_GetMapFilteredResults", native_get_map_filtered);
+    register_cmc("Custom_GetProfessionRecipeInfo", native_get_profession_recipe_info);
+    register_cmc("Custom_LockItem", native_lock_item);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
