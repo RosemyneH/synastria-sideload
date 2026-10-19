@@ -1116,6 +1116,7 @@ void load_obj_loc(const uint8_t* data, size_t size) {
 void load_quest_data(const uint8_t* data, size_t size);
 void load_itemloc_obj_at(const uint8_t* data, size_t size);
 void load_itemloc_source_at(const uint8_t* data, size_t size);
+void load_itemloc_source_count(const uint8_t* data, size_t size);
 
 void load_item_loc(const uint8_t* data, size_t size) {
     if (size < 4) {
@@ -1130,6 +1131,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
     load_quest_data(data, size);
     load_itemloc_obj_at(data, size);
     load_itemloc_source_at(data, size);
+    load_itemloc_source_count(data, size);
 }
 
 #include "natives/custom_get_current_zone.inc"
@@ -1142,6 +1144,9 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_source_at.inc"
 #include "natives/custom_get_current_zone_our.inc"
 #include "natives/custom_get_quest_completed.inc"
+#include "natives/itemloc_source_count.inc"
+#include "natives/custom_get_spell_desc.inc"
+#include "natives/custom_get_item_count.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1152,14 +1157,14 @@ const char* kStubs[] = {
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
-    "ItemLocGetSourceCount", "ItemLocSetSourceSort", "ItemLocGetSourceSort",
+    "ItemLocSetSourceSort", "ItemLocGetSourceSort",
     "ItemLocGetObjCount", "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocItemIsInZone", "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
     "Custom_GetPrequest",
     "Custom_GetQuestReq", "Custom_GetQuestCanAccept",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
-    "Custom_IsItemSoulbound", "Custom_GetItemCount", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
+    "Custom_IsItemSoulbound", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
     "Custom_GetItemLinkBySlot", "Custom_IsPlayerNear",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
@@ -1398,7 +1403,9 @@ void register_natives() {
     register_cmc("ItemLocGetObjAt", native_itemloc_obj_at);
     register_cmc("ItemLocGetSourceAt", native_itemloc_source_at);
     register_cmc("Custom_GetQuestCompleted", native_get_quest_completed);
-    register_cmc("Custom_GetSpellDesc", native_empty);
+    register_cmc("ItemLocGetSourceCount", native_itemloc_source_count);
+    register_cmc("Custom_GetItemCount", native_get_item_count);
+    register_cmc("Custom_GetSpellDesc", native_get_spell_desc);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
