@@ -1140,6 +1140,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_is_on_quest.inc"
 #include "natives/custom_get_quest_data.inc"
 #include "natives/itemloc_obj_at.inc"
+#include "natives/itemloc_obj_count.inc"
 #include "natives/itemloc_source_at.inc"
 #include "natives/custom_get_current_zone_our.inc"
 #include "natives/custom_get_quest_completed.inc"
@@ -1159,7 +1160,7 @@ const char* kStubs[] = {
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
     "ItemLocSetSourceSort", "ItemLocGetSourceSort",
-    "ItemLocGetObjCount", "ItemLocSetObjSort", "ItemLocFixupObjId",
+    "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
     "Custom_GetPrequest",
@@ -1402,6 +1403,7 @@ void register_natives() {
     register_cmc("Custom_IsOnQuest", native_is_on_quest);
     register_cmc("Custom_GetQuestData", native_get_quest_data);
     register_cmc("ItemLocGetObjAt", native_itemloc_obj_at);
+    register_cmc("ItemLocGetObjCount", native_itemloc_obj_count);
     register_cmc("ItemLocGetSourceAt", native_itemloc_source_at);
     register_cmc("Custom_GetQuestCompleted", native_get_quest_completed);
     register_cmc("ItemLocGetSourceCount", native_itemloc_source_count);
