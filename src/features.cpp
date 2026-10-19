@@ -1188,6 +1188,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_item_link_by_slot.inc"
 #include "natives/custom_send_quest_track.inc"
 #include "natives/custom_add_track_obj_loc.inc"
+#include "natives/custom_remove_track_obj_loc.inc"
 #include "natives/custom_clear_track_obj_loc.inc"
 #include "natives/custom_is_player_near.inc"
 #include "natives/custom_is_container_soulbound.inc"
@@ -1213,7 +1214,6 @@ const char* kStubs[] = {
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
-    "Custom_RemoveTrackObjLoc",
     "Custom_CalculateMapMarker",
     "Custom_GetMapFilteredResults", "Custom_GetPendingEvents",
     "Custom_GetPendingEventsEx", "Custom_QueueEvent", "Custom_QueueEventEx",
@@ -1467,6 +1467,7 @@ void register_natives() {
     register_cmc("Custom_GetItemLinkBySlot", native_get_item_link_by_slot);
     register_cmc("Custom_SendQuestTrack", native_send_quest_track);
     register_cmc("Custom_AddTrackObjLoc", native_add_track_obj_loc);
+    register_cmc("Custom_RemoveTrackObjLoc", native_remove_track_obj_loc);
     register_cmc("Custom_ClearTrackObjLoc", native_clear_track_obj_loc);
     register_cmc("Custom_IsPlayerNear", native_is_player_near);
     register_cmc("Custom_IsContainerItemSoulbound", native_is_container_soulbound);
