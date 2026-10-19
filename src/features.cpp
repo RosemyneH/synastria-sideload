@@ -2148,6 +2148,280 @@ void adopt_classes(const uint8_t* rest, uint32_t size) {
     log_line("dual class list count=%u first=%u second=%u", count, next[0].id, count > 1 ? next[1].id : 0);
 }
 
+constexpr uint32_t kSpellBytes = 0x2b8;
+constexpr int kSpellNameAt = 0x220;
+constexpr int kSpellClassAt = 0x250;
+constexpr int kSpellIdLimit = 0x1fbd0;
+
+int spell_family(const std::string& text) {
+    if (text.find("Death Knight") != std::string::npos) {
+        return 15;
+    }
+    if (text.find("Druid") != std::string::npos) {
+        return 7;
+    }
+    if (text.find("Priest") != std::string::npos) {
+        return 6;
+    }
+    if (text.find("Paladin") != std::string::npos) {
+        return 10;
+    }
+    if (text.find("Warrior") != std::string::npos) {
+        return 4;
+    }
+    if (text.find("Rogue") != std::string::npos) {
+        return 8;
+    }
+    if (text.find("Hunter") != std::string::npos) {
+        return 9;
+    }
+    if (text.find("Shaman") != std::string::npos) {
+        return 11;
+    }
+    if (text.find("Mage") != std::string::npos) {
+        return 3;
+    }
+    if (text.find("Warlock") != std::string::npos) {
+        return 5;
+    }
+    return 0;
+}
+
+struct SpellTable {
+    uint8_t* base = nullptr;
+    int32_t min_id = 0;
+    int32_t max_id = 0;
+    uint8_t** by_id = nullptr;
+    bool compress = false;
+    uint8_t* (*decompress)(const uint8_t*, uint32_t, uint8_t*) = nullptr;
+    uint32_t (*compress_row)(const uint8_t*, uint32_t, uint8_t*) = nullptr;
+    std::map<int, std::vector<uint8_t>> plain;
+    std::map<int, std::vector<uint8_t>> packed;
+    std::vector<char*> text;
+};
+
+SpellTable& spell_table() {
+    static SpellTable table;
+    static bool ready = false;
+    if (ready) {
+        return table;
+    }
+    ready = true;
+    void* found = nullptr;
+    if (!syn_resolve("g_spellDB", &found) || !found) {
+        return table;
+    }
+    table.base = static_cast<uint8_t*>(found);
+    memcpy(&table.max_id, table.base + 0x10, 4);
+    memcpy(&table.min_id, table.base + 0x14, 4);
+    memcpy(&table.by_id, table.base + 0x30, sizeof(table.by_id));
+    found = nullptr;
+    if (syn_resolve("g_clientDbPerformCompress", &found) && found) {
+        int32_t flag = 0;
+        memcpy(&flag, found, 4);
+        table.compress = flag != 0;
+    }
+    found = nullptr;
+    if (syn_resolve("_Z13DecompressRowPKhjPh", &found)) {
+        table.decompress = reinterpret_cast<uint8_t* (*)(const uint8_t*, uint32_t, uint8_t*)>(found);
+    }
+    found = nullptr;
+    if (syn_resolve("_Z11CompressRowPKhjPh", &found)) {
+        table.compress_row = reinterpret_cast<uint32_t (*)(const uint8_t*, uint32_t, uint8_t*)>(found);
+    }
+    return table;
+}
+
+uint8_t* spell_plain(SpellTable& table, int id) {
+    if (!table.by_id || id < table.min_id || id > table.max_id) {
+        return nullptr;
+    }
+    auto have = table.plain.find(id);
+    if (have != table.plain.end()) {
+        return have->second.data();
+    }
+    uint8_t* raw = table.by_id[id - table.min_id];
+    if (!raw) {
+        return nullptr;
+    }
+    std::vector<uint8_t> row(kSpellBytes);
+    if (table.compress) {
+        if (!table.decompress) {
+            return nullptr;
+        }
+        table.decompress(raw, kSpellBytes, row.data());
+    } else {
+        memcpy(row.data(), raw, kSpellBytes);
+    }
+    auto stored = table.plain.emplace(id, std::move(row));
+    return stored.first->second.data();
+}
+
+void spell_store(SpellTable& table, int id) {
+    uint8_t* row = spell_plain(table, id);
+    if (!row || !table.by_id) {
+        return;
+    }
+    if (!table.compress) {
+        table.by_id[id - table.min_id] = row;
+        return;
+    }
+    if (!table.compress_row) {
+        return;
+    }
+    uint32_t bytes = table.compress_row(row, kSpellBytes, nullptr);
+    if (bytes == 0 || bytes > 0x2000) {
+        return;
+    }
+    auto& blob = table.packed[id];
+    blob.resize(bytes);
+    table.compress_row(row, kSpellBytes, blob.data());
+    table.by_id[id - table.min_id] = blob.data();
+}
+
+void spell_set_name(SpellTable& table, int id, const char* text, int length) {
+    uint8_t* row = spell_plain(table, id);
+    if (!row || length <= 0) {
+        return;
+    }
+    char* copy = new char[static_cast<size_t>(length) + 1];
+    memcpy(copy, text, static_cast<size_t>(length));
+    copy[length] = 0;
+    table.text.push_back(copy);
+    memcpy(row + kSpellNameAt, &copy, sizeof(copy));
+    spell_store(table, id);
+}
+
+void spell_set_family(SpellTable& table, int id, int family) {
+    uint8_t* row = spell_plain(table, id);
+    if (!row || family == 0) {
+        return;
+    }
+    int32_t value = family;
+    memcpy(row + kSpellClassAt, &value, 4);
+    spell_store(table, id);
+}
+
+bool spell_text_ok(const uint8_t* data, int length) {
+    if (length < 2) {
+        return false;
+    }
+    if (data[0] < 'A' || data[0] > 'Z') {
+        return false;
+    }
+    for (int i = 0; i < length; ++i) {
+        unsigned char c = data[i];
+        if (c < 32 || c > 126) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void publish_spell_records() {
+    SpellTable& table = spell_table();
+    if (!table.base || !table.by_id) {
+        log_line("spell db missing");
+        return;
+    }
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/WoWExt.bin", g_root);
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        return;
+    }
+    fseek(file, 0, SEEK_END);
+    long length = ftell(file);
+    rewind(file);
+    std::vector<uint8_t> data(static_cast<size_t>(length > 0 ? length : 0));
+    if (length <= 12 || fread(data.data(), 1, data.size(), file) != data.size()) {
+        fclose(file);
+        return;
+    }
+    fclose(file);
+    uint32_t count = 0;
+    memcpy(&count, data.data() + 8, 4);
+    if (count >= 0x1000) {
+        return;
+    }
+    std::vector<char> plain(1 << 22);
+    size_t offset = 12;
+    int names = 0;
+    int grouped = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t id = 0;
+        uint32_t bytes = 0;
+        if (offset + 24 > data.size()) {
+            break;
+        }
+        memcpy(&id, data.data() + offset, 4);
+        offset += 20;
+        memcpy(&bytes, data.data() + offset, 4);
+        offset += 4;
+        if (offset + bytes > data.size()) {
+            break;
+        }
+        int plain_size = LZ4_decompress_safe(reinterpret_cast<const char*>(data.data() + offset), plain.data(),
+                                              static_cast<int>(bytes), static_cast<int>(plain.size()));
+        offset += bytes;
+        if (plain_size < 16 || static_cast<uint8_t>(plain[1]) != 0x0f) {
+            continue;
+        }
+        const uint8_t* cursor = reinterpret_cast<const uint8_t*>(plain.data());
+        int k = 10;
+        while (k + 6 < plain_size) {
+            uint32_t spell = 0;
+            uint16_t span = 0;
+            memcpy(&spell, cursor + k, 4);
+            memcpy(&span, cursor + k + 4, 2);
+            if (spell >= 1 && spell < static_cast<uint32_t>(kSpellIdLimit) && span >= 2 && span <= 80
+                && k + 6 + span <= plain_size && spell_text_ok(cursor + k + 6, span)) {
+                std::string text(reinterpret_cast<const char*>(cursor + k + 6), span);
+                int family = spell_family(text);
+                if (text.find('$') == std::string::npos) {
+                    spell_set_name(table, static_cast<int>(spell), text.c_str(), span);
+                    ++names;
+                }
+                if (family) {
+                    spell_set_family(table, static_cast<int>(spell), family);
+                }
+                k += 6 + span;
+                if (family && k + 3 <= plain_size) {
+                    uint16_t head = 0;
+                    memcpy(&head, cursor + k, 2);
+                    uint8_t many = cursor[k + 2];
+                    if (head >= 1 && head < kSpellIdLimit && many >= 1 && many <= 16
+                        && k + 3 + many * 2 <= plain_size) {
+                        bool fits = true;
+                        for (uint8_t n = 0; n < many; ++n) {
+                            uint16_t member = 0;
+                            memcpy(&member, cursor + k + 3 + n * 2, 2);
+                            if (member >= kSpellIdLimit) {
+                                fits = false;
+                                break;
+                            }
+                        }
+                        if (fits) {
+                            for (uint8_t n = 0; n < many; ++n) {
+                                uint16_t member = 0;
+                                memcpy(&member, cursor + k + 3 + n * 2, 2);
+                                if (member) {
+                                    spell_set_family(table, member, family);
+                                    ++grouped;
+                                }
+                            }
+                            k += 3 + many * 2;
+                        }
+                    }
+                }
+                continue;
+            }
+            ++k;
+        }
+    }
+    log_line("spell db names=%d grouped=%d", names, grouped);
+}
+
 void publish_item_records() {
     void* found = nullptr;
     if (!syn_resolve("g_itemDB", &found) || !found) {
@@ -2335,6 +2609,7 @@ void syn_features_reset() {
 void syn_features_world() {
     g_in_world = true;
     publish_item_records();
+    publish_spell_records();
 }
 
 void syn_features_harvest() {
