@@ -1238,6 +1238,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_set_item_select_filter.inc"
 #include "natives/custom_get_item_select.inc"
 #include "natives/custom_clear_dressup_facing.inc"
+#include "natives/custom_set_dressup_facing.inc"
 #include "natives/get_safe_invoke_queue.inc"
 #include "natives/set_item_tracker_class_mask.inc"
 #include "natives/custom_get_transmog_enchant.inc"
@@ -1246,7 +1247,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_unlock_item.inc"
 
 const char* kStubs[] = {
-    "Custom_SetDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
+    "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_FixupTransmogId",
 };
 
@@ -1551,6 +1552,7 @@ void register_natives() {
     register_cmc("Custom_SetItemSelectFilter", native_set_item_select_filter);
     register_cmc("Custom_GetItemSelect", native_get_item_select);
     register_cmc("Custom_ClearDressupFacing", native_clear_dressup_facing);
+    register_cmc("Custom_SetDressupFacing", native_set_dressup_facing);
     register_cmc("Custom_LockItem", native_lock_item);
     register_cmc("Custom_UnlockItem", native_unlock_item);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
