@@ -1173,6 +1173,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_item_count.inc"
 #include "natives/custom_is_item_equip_mgr.inc"
 #include "natives/custom_is_have_item.inc"
+#include "natives/custom_get_have_items.inc"
 #include "natives/custom_is_item_soulbound.inc"
 #include "natives/custom_get_merchant_item.inc"
 #include "natives/custom_get_quest_req.inc"
@@ -1199,7 +1200,7 @@ const char* kStubs[] = {
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
-    "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_GetQuestItemId",
+    "Custom_CacheHaveItems", "Custom_GetQuestItemId",
     "Custom_IsContainerItemSoulbound",
     "Custom_IsPlayerNear",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
@@ -1447,6 +1448,7 @@ void register_natives() {
     register_cmc("Custom_GetItemCount", native_get_item_count);
     register_cmc("Custom_IsItemEquipMgr", native_is_item_equip_mgr);
     register_cmc("Custom_IsHaveItem", native_is_have_item);
+    register_cmc("Custom_GetHaveItems", native_get_have_items);
     register_cmc("Custom_IsItemSoulbound", native_is_item_soulbound);
     register_cmc("Custom_GetQuestReq", native_get_quest_req);
     register_cmc("Custom_GetPrequest", native_get_prequest);
