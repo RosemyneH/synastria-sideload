@@ -1128,6 +1128,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_current_zone.inc"
 #include "natives/custom_get_zone_name.inc"
 #include "natives/custom_zone_contains.inc"
+#include "natives/custom_get_quest_name.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1378,7 +1379,7 @@ void register_natives() {
     register_cmc("Custom_GetZoneName", native_get_zone_name);
     register_cmc("Custom_ZoneContains", native_zone_contains);
     register_cmc("Custom_GetCurrentZone", native_get_current_zone);
-    register_cmc("Custom_GetQuestName", native_empty);
+    register_cmc("Custom_GetQuestName", native_get_quest_name);
     register_cmc("Custom_GetSpellDesc", native_empty);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
