@@ -1174,6 +1174,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_item_count.inc"
 #include "natives/custom_is_item_equip_mgr.inc"
 #include "natives/custom_is_have_item.inc"
+#include "natives/custom_cache_have_items.inc"
 #include "natives/custom_get_have_items.inc"
 #include "natives/custom_is_item_soulbound.inc"
 #include "natives/custom_get_merchant_item.inc"
@@ -1199,6 +1200,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_item_in_multi_zone.inc"
 #include "natives/itemloc_source_in_zone.inc"
 #include "natives/custom_translate_map_position.inc"
+#include "natives/custom_get_map_filtered.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1208,7 +1210,7 @@ const char* kStubs[] = {
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
-    "Custom_CacheHaveItems", "Custom_GetQuestItemId",
+    "Custom_GetQuestItemId",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
@@ -1216,7 +1218,6 @@ const char* kStubs[] = {
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
     "Custom_CalculateMapMarker",
-    "Custom_GetMapFilteredResults",
     "Custom_GetPendingEventsEx", "Custom_QueueEvent", "Custom_QueueEventEx",
 };
 
@@ -1452,6 +1453,7 @@ void register_natives() {
     register_cmc("Custom_GetItemCount", native_get_item_count);
     register_cmc("Custom_IsItemEquipMgr", native_is_item_equip_mgr);
     register_cmc("Custom_IsHaveItem", native_is_have_item);
+    register_cmc("Custom_CacheHaveItems", native_cache_have_items);
     register_cmc("Custom_GetHaveItems", native_get_have_items);
     register_cmc("Custom_IsItemSoulbound", native_is_item_soulbound);
     register_cmc("Custom_GetQuestReq", native_get_quest_req);
@@ -1482,6 +1484,7 @@ void register_natives() {
     register_cmc("Custom_GetSpellEffect", native_get_spell_effect);
     register_cmc("Custom_GetSpellTools", native_get_spell_tools);
     register_cmc("Custom_TranslateMapPosition", native_translate_map_position);
+    register_cmc("Custom_GetMapFilteredResults", native_get_map_filtered);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
