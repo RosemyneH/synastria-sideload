@@ -1195,6 +1195,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_item_in_zone.inc"
 #include "natives/itemloc_item_in_multi_zone.inc"
 #include "natives/itemloc_source_in_zone.inc"
+#include "natives/custom_translate_map_position.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1211,7 +1212,6 @@ const char* kStubs[] = {
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
-    "Custom_TranslateMapPosition",
     "Custom_RemoveTrackObjLoc",
     "Custom_ClearTrackObjLoc", "Custom_CalculateMapMarker",
     "Custom_GetMapFilteredResults", "Custom_GetPendingEvents",
@@ -1476,6 +1476,7 @@ void register_natives() {
     register_cmc("Custom_GetHighestLearnedSpell", native_get_highest_spell);
     register_cmc("Custom_GetSpellEffect", native_get_spell_effect);
     register_cmc("Custom_GetSpellTools", native_get_spell_tools);
+    register_cmc("Custom_TranslateMapPosition", native_translate_map_position);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
