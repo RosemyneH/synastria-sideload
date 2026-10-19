@@ -1153,6 +1153,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_quest_data.inc"
 #include "natives/itemloc_obj_at.inc"
 #include "natives/itemloc_obj_count.inc"
+#include "natives/itemloc_set_obj_sort.inc"
 #include "natives/itemloc_source_at.inc"
 #include "natives/itemloc_get_source_sort.inc"
 #include "natives/itemloc_set_source_sort.inc"
@@ -1175,6 +1176,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_all_objs_in_zone.inc"
 #include "natives/itemloc_sources_compacted.inc"
 #include "natives/custom_get_cursor_item.inc"
+#include "natives/custom_get_item_guid.inc"
+#include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
 #include "natives/itemloc_item_in_multi_zone.inc"
 #include "natives/itemloc_source_in_zone.inc"
@@ -1187,11 +1190,10 @@ const char* kStubs[] = {
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
-    "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
-    "ItemLocSetObjSort",
+    "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem",     "Custom_GetQuestItemId",
     "ItemLocGetAllItemsInZone",
     "Custom_IsContainerItemSoulbound",
-    "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
+    "Custom_IsItemEquipMgr",
     "Custom_GetItemLinkBySlot", "Custom_IsPlayerNear",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
@@ -1201,7 +1203,7 @@ const char* kStubs[] = {
     "Custom_GetSpellTools",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
-    "Custom_GetGossipQuests", "Custom_TranslateMapPosition",
+    "Custom_TranslateMapPosition",
     "Custom_AddTrackObjLoc", "Custom_RemoveTrackObjLoc",
     "Custom_ClearTrackObjLoc", "Custom_CalculateMapMarker",
     "Custom_GetMapFilteredResults", "Custom_SendQuestTrack", "Custom_GetPendingEvents",
@@ -1428,6 +1430,7 @@ void register_natives() {
     register_cmc("Custom_GetQuestData", native_get_quest_data);
     register_cmc("ItemLocGetObjAt", native_itemloc_obj_at);
     register_cmc("ItemLocGetObjCount", native_itemloc_obj_count);
+    register_cmc("ItemLocSetObjSort", native_itemloc_set_obj_sort);
     register_cmc("ItemLocGetSourceAt", native_itemloc_source_at);
     register_cmc("ItemLocGetSourceSort", native_itemloc_get_source_sort);
     register_cmc("ItemLocSetSourceSort", native_itemloc_set_source_sort);
@@ -1447,6 +1450,8 @@ void register_natives() {
     register_cmc("ItemLocGetAllObjsInZone", native_itemloc_all_objs_in_zone);
     register_cmc("ItemLocGetSourcesCompacted", native_itemloc_sources_compacted);
     register_cmc("Custom_GetCurrentCursorItem", native_get_cursor_item);
+    register_cmc("Custom_GetItemGuid", native_get_item_guid);
+    register_cmc("Custom_GetGossipQuests", native_get_gossip_quests);
     register_cmc("Custom_GetMerchantItem", native_get_merchant_item);
     register_cmc("Custom_GetSpellDesc", native_get_spell_desc);
     register_cmc("Custom_GetSpellCooldown", native_get_spell_cooldown);
