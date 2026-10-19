@@ -416,11 +416,6 @@ int stub_native(void*) {
     return 0;
 }
 
-int native_empty(void* state) {
-    g_push_str(state, "");
-    return 1;
-}
-
 int g_tradeskill_filter = 0;
 
 int native_tradeskill_filter(void* state) {
