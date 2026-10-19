@@ -5,6 +5,7 @@
 #include <lz4.h>
 
 #include <algorithm>
+#include <ctime>
 #include <cstdarg>
 #include <cstdint>
 #include <exception>
@@ -467,15 +468,98 @@ int native_affix_mask(void* state) {
     return 5;
 }
 
-int native_attuned_count(void* state) {
-    if (arg_int(state, 1) == 1) {
-        g_push_num(state, 0);
-        return 1;
+int forge_of(int key) {
+    int forge = (key >> 24) & 0xff;
+    return forge >= 0 && forge <= 3 ? forge : -1;
+}
+
+bool attune_hit(int key) {
+    if (game_num(11, key) >= 100.0) {
+        return true;
     }
-    for (int i = 0; i < 4; ++i) {
-        g_push_num(state, 0);
+    for (int cat : {16, 17, 20}) {
+        if (static_cast<int>(game_num(cat, key) + 0.01) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int native_has_attuned(void* state) {
+    int item = arg_int(state, 1) & 0xffff;
+    int filter = -1;
+    if (g_is_num && g_is_num(state, 2)) {
+        filter = arg_int(state, 2);
+    }
+    if (item == 0) {
+        return 0;
+    }
+    for (int forge = 0; forge <= 3; ++forge) {
+        if (filter >= 0 && forge != filter) {
+            continue;
+        }
+        if (attune_hit(item | (forge << 24))) {
+            g_push_num(state, 1);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int native_attuned_count(void* state) {
+    (void)state;
+    int totals[4] = {};
+    std::map<int, int> seen;
+    GameCat* has = game_cat(11);
+    if (has) {
+        for (const auto& entry : has->nums) {
+            if (entry.second < 100.0) {
+                continue;
+            }
+            int forge = forge_of(entry.first);
+            if (forge < 0 || seen[entry.first]) {
+                continue;
+            }
+            seen[entry.first] = 1;
+            ++totals[forge];
+        }
+    }
+    for (int cat : {16, 17, 20}) {
+        GameCat* row = game_cat(cat);
+        if (!row) {
+            continue;
+        }
+        for (const auto& entry : row->nums) {
+            if (static_cast<int>(entry.second + 0.01) == 0) {
+                continue;
+            }
+            int forge = forge_of(entry.first);
+            if (forge < 0 || seen[entry.first]) {
+                continue;
+            }
+            seen[entry.first] = 1;
+            ++totals[forge];
+        }
+    }
+    for (int total : totals) {
+        g_push_num(state, total);
     }
     return 4;
+}
+
+int native_attunable_affixes(void* state) {
+    int count = static_cast<int>(game_num(0x23, 200) + 0.01);
+    if (count <= 0) {
+        static std::time_t asked = 0;
+        std::time_t now = std::time(nullptr);
+        if (now - asked > 3) {
+            asked = now;
+            syn_net_notify(1, 2, nullptr);
+        }
+        return 0;
+    }
+    g_push_num(state, count);
+    return 1;
 }
 
 int native_obj_loaded(void* state) {
@@ -1081,12 +1165,12 @@ void register_natives() {
     register_cmc("GetInProgressAttuneKeys", stub_native);
     register_cmc("GetSafeInvokeQueue", stub_native);
     register_cmc("CalculateAttunableCount", native_zero);
-    register_cmc("CalculateAttunableAffixCount", native_zero);
+    register_cmc("CalculateAttunableAffixCount", native_attunable_affixes);
     register_cmc("CalculateAttunedCount", native_attuned_count);
     register_cmc("CalculateAttunedAffixCount", native_zero);
     register_cmc("CalculateAttunedCountHigh", native_zero);
     register_cmc("CanAttuneItemHelperEx", native_zero);
-    register_cmc("HasAttunedAnyVariantEx", native_false);
+    register_cmc("HasAttunedAnyVariantEx", native_has_attuned);
     register_cmc("IsAttunableBySomeone", native_false);
     register_cmc("GetItemTagsCustom", native_item_tags);
     register_cmc("GetItemExtraCustom", native_item_extra);
@@ -1496,7 +1580,317 @@ struct PktReader {
         take(&value, 4);
         return value;
     }
+
+    uint32_t uleb() {
+        uint32_t value = 0;
+        int shift = 0;
+        while (shift < 28 && ok) {
+            uint8_t bite = u8();
+            value |= static_cast<uint32_t>(bite & 0x7f) << shift;
+            if ((bite & 0x80) == 0) {
+                break;
+            }
+            shift += 7;
+        }
+        return value;
+    }
 };
+
+struct DataPair {
+    uint32_t key = 0;
+    uint64_t bits = 0;
+};
+
+void clear_cat(int cat) {
+    g_game.erase(cat);
+}
+
+uint32_t trunc_num(double value) {
+    return static_cast<uint32_t>(static_cast<int64_t>(value));
+}
+
+bool decode_pairs(PktReader& in, std::vector<DataPair>& out) {
+    uint16_t header = in.u16();
+    if (!in.ok || header == 0) {
+        return in.ok;
+    }
+    int key_fmt = header & 0xff;
+    int value_fmt = header >> 8;
+    std::vector<uint32_t> keys;
+    if (key_fmt == 1) {
+        uint32_t count = in.u32();
+        for (uint32_t i = 0; i < count && in.ok; ++i) {
+            keys.push_back(in.u32());
+        }
+    } else if (key_fmt == 2) {
+        uint32_t acc = 0;
+        while (in.ok) {
+            uint32_t delta = in.uleb();
+            if (!in.ok || delta == 0) {
+                break;
+            }
+            acc += delta;
+            keys.push_back(acc);
+        }
+    } else if (key_fmt == 5) {
+        keys.push_back(in.u32());
+    } else if (key_fmt == 3) {
+        uint32_t base = in.u32();
+        uint32_t bits = in.u32();
+        uint32_t nbytes = (bits + 7) / 8;
+        for (uint32_t i = 0; i < nbytes && in.ok; ++i) {
+            uint8_t bite = in.u8();
+            for (int b = 0; b < 8; ++b) {
+                if (bite & (1 << b)) {
+                    keys.push_back(base + i * 8 + static_cast<uint32_t>(b));
+                }
+            }
+        }
+    } else {
+        return false;
+    }
+    if (!in.ok) {
+        return false;
+    }
+    double shared = 0;
+    bool use_shared = value_fmt == 3;
+    if (use_shared) {
+        shared = in.f32();
+    }
+    for (uint32_t key : keys) {
+        DataPair pair;
+        pair.key = key;
+        double wide = shared;
+        if (value_fmt == 1) {
+            wide = in.f32();
+        } else if (value_fmt == 2) {
+            wide = static_cast<double>(static_cast<int16_t>(in.u16())) * 0.01;
+        } else if (value_fmt == 4) {
+            wide = in.uleb();
+        } else if (value_fmt == 5) {
+            in.take(&pair.bits, 8);
+            if (!in.ok) {
+                return false;
+            }
+            out.push_back(pair);
+            continue;
+        } else if (!use_shared) {
+            return false;
+        }
+        if (!in.ok) {
+            return false;
+        }
+        memcpy(&pair.bits, &wide, 8);
+        out.push_back(pair);
+    }
+    return in.ok;
+}
+
+double pair_number(const DataPair& pair) {
+    double value = 0;
+    memcpy(&value, &pair.bits, 8);
+    return value;
+}
+
+void split_affix_word(uint32_t key, uint64_t word) {
+    uint32_t low = static_cast<uint32_t>(word & 0x3fffffu);
+    uint32_t mid = static_cast<uint32_t>((word >> 22) & 0x3fffffu);
+    uint32_t high = static_cast<uint32_t>(word >> 44);
+    if (low) {
+        set_num(16, static_cast<int>(key), low);
+    }
+    if (mid) {
+        set_num(17, static_cast<int>(key), mid);
+    }
+    if (high) {
+        set_num(20, static_cast<int>(key), high);
+    }
+}
+
+void apply_affix_bit(uint32_t key, double value) {
+    int bit = static_cast<int>(value + 0.01) - 1;
+    if (bit < 0 || bit > 63) {
+        return;
+    }
+    int cat = 16;
+    int shift = bit;
+    if (bit >= 44) {
+        cat = 20;
+        shift = bit - 44;
+    } else if (bit >= 22) {
+        cat = 17;
+        shift = bit - 22;
+    }
+    uint32_t mask = trunc_num(game_num(cat, static_cast<int>(key)) + 0.01);
+    mask |= 1u << shift;
+    set_num(cat, static_cast<int>(key), mask);
+}
+
+bool apply_named_blob(PktReader& in, bool bits) {
+    uint32_t nbytes = in.u32();
+    if (!in.ok || nbytes > 0xffffff || in.off + nbytes > in.size) {
+        in.ok = false;
+        return false;
+    }
+    if (nbytes == 0) {
+        return true;
+    }
+    PktReader blob{in.data + in.off, nbytes};
+    in.off += nbytes;
+    std::vector<DataPair> pairs;
+    if (!decode_pairs(blob, pairs)) {
+        return false;
+    }
+    for (const DataPair& pair : pairs) {
+        if (bits) {
+            apply_affix_bit(pair.key, pair_number(pair));
+        } else {
+            split_affix_word(pair.key, pair.bits);
+        }
+    }
+    return true;
+}
+
+void apply_affix_snapshot(PktReader& in) {
+    clear_cat(16);
+    clear_cat(17);
+    clear_cat(20);
+    if (!apply_named_blob(in, false) || !apply_named_blob(in, true)) {
+        log_line("affix snapshot rejected");
+        in.ok = false;
+        return;
+    }
+    log_line("affix snapshot cats 16=%zu 17=%zu 20=%zu",
+             g_game[16].nums.size(), g_game[17].nums.size(), g_game[20].nums.size());
+}
+
+void apply_item_block(PktReader& in) {
+    uint16_t count = in.u16();
+    uint32_t key = 0;
+    for (uint16_t i = 0; i < count && in.ok; ++i) {
+        key += in.uleb();
+        uint8_t flags = in.u8();
+        int f04 = -1;
+        int f08 = flags & 1;
+        uint32_t f0c = 0;
+        uint32_t f10 = 0;
+        int f18 = 0;
+        uint32_t f14 = 0;
+        bool has18 = false;
+        if (flags & 2) {
+            f04 = in.u8();
+        } else if (flags & 4) {
+            f04 = static_cast<int>(in.uleb());
+        }
+        if (flags & 8) {
+            f0c = in.uleb();
+        }
+        if (flags & 0x10) {
+            f10 = in.uleb();
+        }
+        if (flags & 0x20) {
+            f18 = in.u8();
+            has18 = true;
+        } else if (flags & 0x40) {
+            f18 = static_cast<int>(in.u32());
+            has18 = true;
+        }
+        if (flags & 0x80) {
+            f14 = in.uleb();
+        }
+        if (!in.ok) {
+            return;
+        }
+        if (f04 >= 0) {
+            set_num(1, static_cast<int>(key), f04 + 1);
+        }
+        if (f08) {
+            set_num(3, static_cast<int>(key), 1);
+        }
+        if (f14) {
+            set_num(10, static_cast<int>(key), f14);
+        }
+        if (f0c) {
+            set_num(6, static_cast<int>(key), f0c);
+        }
+        if (f0c && f10) {
+            set_num(7, static_cast<int>(f0c), f10);
+        }
+        if (f0c && has18) {
+            set_num(4, static_cast<int>(f0c), f18 >= 0 ? f18 : -f18 / 1000.0);
+        }
+    }
+    uint8_t listed = in.u8();
+    for (uint8_t i = 0; i < listed && in.ok; ++i) {
+        set_num(2, i + 1, in.u8());
+    }
+}
+
+void apply_attune_block(PktReader& in) {
+    uint8_t groups = in.u8();
+    int written = 0;
+    for (uint8_t g = 0; g < groups && in.ok; ++g) {
+        uint8_t group = in.u8();
+        std::vector<DataPair> pairs;
+        if (!decode_pairs(in, pairs)) {
+            in.ok = false;
+            return;
+        }
+        for (const DataPair& pair : pairs) {
+            set_num(11, static_cast<int>(pair.key | (static_cast<uint32_t>(group) << 24)), pair_number(pair));
+            ++written;
+        }
+    }
+    uint16_t count = in.u16();
+    uint32_t key = 0;
+    for (uint16_t i = 0; i < count && in.ok; ++i) {
+        key += in.uleb();
+        int raw = static_cast<int16_t>(in.u16());
+        set_num(11, static_cast<int>(key), raw * 0.01);
+        ++written;
+    }
+    log_line("init-game attune values=%d cat11=%zu", written, g_game[11].nums.size());
+}
+
+void apply_init_game(const uint8_t* rest, uint32_t size) {
+    PktReader in{rest, size};
+    uint8_t compressed = in.u8();
+    uint32_t comp = in.u32();
+    uint32_t raw = in.u32();
+    if (!in.ok || comp == 0 || comp > 0x10000 || raw == 0 || raw > 0x20000 || in.off + comp > in.size) {
+        log_line("init-game rejected comp=%u raw=%u size=%u", comp, raw, size);
+        return;
+    }
+    std::vector<char> plain(raw);
+    const char* body = reinterpret_cast<const char*>(in.data + in.off);
+    int body_size = static_cast<int>(comp);
+    if (compressed) {
+        int got = LZ4_decompress_safe(body, plain.data(), body_size, static_cast<int>(raw));
+        if (got != static_cast<int>(raw)) {
+            log_line("init-game decompress %d wanted %u", got, raw);
+            return;
+        }
+        body = plain.data();
+        body_size = got;
+    }
+    PktReader game{reinterpret_cast<const uint8_t*>(body), static_cast<uint32_t>(body_size)};
+    uint8_t has_items = game.u8();
+    if (has_items) {
+        apply_item_block(game);
+    }
+    uint8_t flags = game.u8();
+    if (!game.ok) {
+        log_line("init-game header short");
+        return;
+    }
+    if ((flags & 2) == 0) {
+        clear_cat(11);
+    }
+    if (flags & 1) {
+        apply_attune_block(game);
+    }
+    log_line("init-game flags=%u items=%u ok=%d", flags, has_items, game.ok ? 1 : 0);
+}
 
 void apply_game_data(const uint8_t* rest, uint32_t size) {
     PktReader in{rest, size};
@@ -1561,8 +1955,12 @@ void apply_game_data(const uint8_t* rest, uint32_t size) {
             continue;
         }
         if (kind == 0x0b) {
-            log_line("game data snapshot left unread");
-            break;
+            apply_affix_snapshot(in);
+            if (!in.ok) {
+                break;
+            }
+            ++applied;
+            continue;
         }
         in.u32();
         uint32_t bytes = in.u32();
@@ -1577,6 +1975,9 @@ void apply_game_data(const uint8_t* rest, uint32_t size) {
 }
 
 void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size) {
+    if (cmd == 7 && rest) {
+        apply_init_game(rest, size);
+    }
     if (cmd == 13 && rest) {
         apply_game_data(rest, size);
     }
