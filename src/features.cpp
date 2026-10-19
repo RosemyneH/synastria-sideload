@@ -148,20 +148,19 @@ struct ClassInfo {
     int id;
     const char* key;
     const char* name;
-    int r, g, b;
 };
 
 const ClassInfo kClasses[] = {
-    {1, "WARRIOR", "Warrior", 199, 156, 110},
-    {2, "PALADIN", "Paladin", 245, 140, 186},
-    {3, "HUNTER", "Hunter", 171, 212, 115},
-    {4, "ROGUE", "Rogue", 255, 245, 105},
-    {5, "PRIEST", "Priest", 255, 255, 255},
-    {6, "DEATHKNIGHT", "Death Knight", 196, 31, 59},
-    {7, "SHAMAN", "Shaman", 0, 112, 222},
-    {8, "MAGE", "Mage", 64, 199, 235},
-    {9, "WARLOCK", "Warlock", 135, 135, 237},
-    {11, "DRUID", "Druid", 255, 125, 10},
+    {1, "WARRIOR", "Warrior"},
+    {2, "PALADIN", "Paladin"},
+    {3, "HUNTER", "Hunter"},
+    {4, "ROGUE", "Rogue"},
+    {5, "PRIEST", "Priest"},
+    {6, "DEATHKNIGHT", "Death Knight"},
+    {7, "SHAMAN", "Shaman"},
+    {8, "MAGE", "Mage"},
+    {9, "WARLOCK", "Warlock"},
+    {11, "DRUID", "Druid"},
 };
 
 bool valid_class(int id) {
@@ -380,34 +379,173 @@ int cmc_my_name(void* state) {
     return 1;
 }
 
-void push_color(void* state, int id) {
-    const ClassInfo* info = class_info(id);
-    if (!info) {
-        g_push_nil(state);
-        return;
+float bits_float(uint32_t bits) {
+    float value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+struct Swatch {
+    int id;
+    uint32_t r, g, b;
+};
+
+// ʕ •ᴥ•ʔ✿ Raid swatches are the nameplate class colors. Pure swatches are the doubled-class mix. ✿ ʕ •ᴥ•ʔ
+const Swatch kRaid[] = {
+    {1, 0x3f47ae14u, 0x3f1c28f6u, 0x3edc28f6u},
+    {2, 0x3f75c28fu, 0x3f0ccccdu, 0x3f3ae148u},
+    {3, 0x3f2b851fu, 0x3f547ae1u, 0x3ee66666u},
+    {4, 0x3f800000u, 0x3f75c28fu, 0x3ed1eb85u},
+    {5, 0x3f800000u, 0x3f800000u, 0x3f800000u},
+    {6, 0x3f451eb8u, 0x3df5c28fu, 0x3e6b851fu},
+    {7, 0x00000000u, 0x3ee147aeu, 0x3f5eb852u},
+    {8, 0x3ed1eb85u, 0x3f4ccccdu, 0x3f70a3d7u},
+    {9, 0x3f147ae1u, 0x3f028f5cu, 0x3f4a3d71u},
+    {11, 0x3f800000u, 0x3efae148u, 0x3d23d70au},
+};
+
+const Swatch kPure[] = {
+    {1, 0x3f800000u, 0x00000000u, 0x00000000u},
+    {2, 0x3f800000u, 0x00000000u, 0x3f000000u},
+    {3, 0x00000000u, 0x3f800000u, 0x00000000u},
+    {4, 0x3f800000u, 0x3f800000u, 0x00000000u},
+    {5, 0x3f4ccccdu, 0x3f4ccccdu, 0x3f4ccccdu},
+    {6, 0x3f800000u, 0x00000000u, 0x00000000u},
+    {7, 0x00000000u, 0x00000000u, 0x3f800000u},
+    {8, 0x3e4ccccdu, 0x3e4ccccdu, 0x3f666666u},
+    {9, 0x3f800000u, 0x00000000u, 0x3f4ccccdu},
+    {11, 0x3f800000u, 0x3e99999au, 0x3e99999au},
+};
+
+bool swatch(const Swatch* table, int count, int id, float& r, float& g, float& b) {
+    for (int i = 0; i < count; ++i) {
+        if (table[i].id == id) {
+            r = bits_float(table[i].r);
+            g = bits_float(table[i].g);
+            b = bits_float(table[i].b);
+            return true;
+        }
     }
-    g_push_num(state, info->r / 255.0);
-    g_push_num(state, info->g / 255.0);
-    g_push_num(state, info->b / 255.0);
+    return false;
+}
+
+int color_byte(float value) {
+    int byte = static_cast<int>(value * 255.0f);
+    if (byte < 0) {
+        return 0;
+    }
+    if (byte > 255) {
+        return 255;
+    }
+    return byte;
+}
+
+// ʕ •ᴥ•ʔ✿ Two classes average. A doubled class averages the raid swatch with the pure one. ✿ ʕ •ᴥ•ʔ
+bool class_channels(int primary, int secondary, int& r, int& g, int& b) {
+    float pr = 0;
+    float pg = 0;
+    float pb = 0;
+    if (!swatch(kRaid, static_cast<int>(sizeof(kRaid) / sizeof(kRaid[0])), primary, pr, pg, pb)) {
+        return false;
+    }
+    float rr = pr;
+    float rg = pg;
+    float rb = pb;
+    if (secondary > 0) {
+        float sr = 0;
+        float sg = 0;
+        float sb = 0;
+        const Swatch* table = primary == secondary ? kPure : kRaid;
+        int count = primary == secondary ? static_cast<int>(sizeof(kPure) / sizeof(kPure[0])) : static_cast<int>(sizeof(kRaid) / sizeof(kRaid[0]));
+        if (swatch(table, count, secondary, sr, sg, sb)) {
+            rr = (pr + sr) * 0.5f;
+            rg = (pg + sg) * 0.5f;
+            rb = (pb + sb) * 0.5f;
+        }
+    }
+    r = color_byte(rr);
+    g = color_byte(rg);
+    b = color_byte(rb);
+    return true;
+}
+
+bool pair_from_pack(int pack, int& primary, int& secondary) {
+    if (pack <= 0 || pack > 0xffff) {
+        return false;
+    }
+    int low = pack & 0xff;
+    int high = (pack >> 8) & 0xff;
+    bool lo = class_info(low) != nullptr;
+    bool hi = class_info(high) != nullptr;
+    if (lo && hi) {
+        primary = low;
+        secondary = high;
+        return true;
+    }
+    if (lo && high == 0) {
+        primary = low;
+        secondary = 0;
+        return true;
+    }
+    if (hi && low == 0) {
+        primary = high;
+        secondary = 0;
+        return true;
+    }
+    return false;
+}
+
+bool pair_from_name(const char* text, int& primary, int& secondary) {
+    if (!text || !text[0]) {
+        return false;
+    }
+    for (const ClassInfo& info : kClasses) {
+        if (std::strcmp(text, info.name) == 0 || std::strcmp(text, info.key) == 0) {
+            primary = info.id;
+            secondary = 0;
+            return true;
+        }
+    }
+    static const int kIds[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 11};
+    for (int low : kIds) {
+        for (int high : kIds) {
+            const char* combo = combo_name(low, high);
+            if (combo && std::strcmp(text, combo) == 0) {
+                primary = low;
+                secondary = high;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void push_channels(void* state, int r, int g, int b) {
+    g_push_num(state, r / 255.0);
+    g_push_num(state, g / 255.0);
+    g_push_num(state, b / 255.0);
     char text[16];
-    snprintf(text, sizeof(text), "|cff%02x%02x%02x", info->r, info->g, info->b);
+    snprintf(text, sizeof(text), "|cff%02x%02x%02x", r, g, b);
     g_push_str(state, text);
 }
 
 int cmc_color(void* state) {
-    int pack = arg_int(state, 1);
-    int id = pack;
-    if (!class_info(id)) {
-        id = pack & 0xff;
-        if (!class_info(id)) {
-            id = (pack >> 8) & 0xff;
-        }
+    int primary = 0;
+    int secondary = 0;
+    bool found = false;
+    if (g_is_num && g_is_num(state, 1)) {
+        found = pair_from_pack(arg_int(state, 1), primary, secondary);
+    } else if (g_to_str && g_is_str && g_is_str(state, 1)) {
+        found = pair_from_name(g_to_str(state, 1, nullptr), primary, secondary);
     }
-    if (!class_info(id)) {
+    int r = 0;
+    int g = 0;
+    int b = 0;
+    if (!found || !class_channels(primary, secondary, r, g, b)) {
         g_push_nil(state);
         return 1;
     }
-    push_color(state, id);
+    push_channels(state, r, g, b);
     return 4;
 }
 
