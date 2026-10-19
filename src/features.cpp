@@ -1183,6 +1183,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_sources_compacted.inc"
 #include "natives/custom_get_cursor_item.inc"
 #include "natives/custom_get_item_guid.inc"
+#include "natives/custom_get_item_link_by_slot.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
@@ -1199,7 +1200,7 @@ const char* kStubs[] = {
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_GetQuestItemId",
     "Custom_IsContainerItemSoulbound",
-    "Custom_GetItemLinkBySlot", "Custom_IsPlayerNear",
+    "Custom_IsPlayerNear",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
@@ -1457,6 +1458,7 @@ void register_natives() {
     register_cmc("ItemLocGetSourcesCompacted", native_itemloc_sources_compacted);
     register_cmc("Custom_GetCurrentCursorItem", native_get_cursor_item);
     register_cmc("Custom_GetItemGuid", native_get_item_guid);
+    register_cmc("Custom_GetItemLinkBySlot", native_get_item_link_by_slot);
     register_cmc("Custom_GetSkillIndex", native_get_skill_index);
     register_cmc("Custom_GetGossipQuests", native_get_gossip_quests);
     register_cmc("Custom_GetMerchantItem", native_get_merchant_item);
