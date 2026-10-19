@@ -1,0 +1,32 @@
+#ifndef WOW_SOURCE_DB_REC_TALENTREC_H
+#define WOW_SOURCE_DB_REC_TALENTREC_H
+
+#include <cstddef>
+#include <cstdint>
+
+class SFileImpl;
+
+class TalentRec {
+    public:
+    static const int32_t s_numColumns = 23;
+    static const int32_t s_rowSize = 92;
+    static const bool s_generatedID = false;
+
+    /* 0000 */ int32_t m_id;
+    /* 0004 */ int32_t m_tabID;
+    /* 0008 */ int32_t m_tierID;
+    /* 000C */ int32_t m_columnIndex;
+    /* 0010 */ int32_t m_spellRank [9];
+    /* 0034 */ int32_t m_prereqTalent [3];
+    /* 0040 */ int32_t m_prereqRank [3];
+    /* 004C */ int32_t m_flags;
+    /* 0050 */ int32_t m_requiredSpellID;
+    /* 0054 */ int32_t m_categoryMask [2];
+
+    TalentRec();
+    ~TalentRec();
+    static const char* GetFilename();
+    bool Read(SFileImpl* file, const char* stringBuffer);
+};
+
+#endif

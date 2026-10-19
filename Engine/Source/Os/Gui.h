@@ -1,0 +1,188 @@
+#ifndef ENGINE_SOURCE_OS_GUI_H
+#define ENGINE_SOURCE_OS_GUI_H
+
+#include <cstdint>
+#include "Engine/Source/Storm/H/stpl.h"
+#include "Engine/Source/Tempest/C2iVector.h"
+#include "Engine/Source/Tempest/CImVector.h"
+#include "Engine/Source/Tempest/CiRect.h"
+
+class COsDialog;
+class COsMenu;
+class COsTreeView;
+
+struct OsGuiCallbackParams {
+    /* 0000 */ int32_t type;
+    /* 0004 */ int32_t subType;
+    /* 0008 */ int32_t code;
+    /* 000C */ void* user;
+};
+
+typedef void (*OsGuiCallback)(const OsGuiCallbackParams& params);
+
+struct OsGuiTVDDInfo {
+    /* 0000 */ COsTreeView* treeView;
+    /* 0004 */ int32_t action;
+    /* 0008 */ void* dragItem;
+    /* 000C */ void* targItem;
+    /* 0010 */ int32_t targX;
+    /* 0014 */ int32_t targY;
+};
+
+struct OsGuiTreeItemParams {
+    /* 0000 */ int32_t used;
+    /* 0004 */ CImVector color;
+    /* 0008 */ void* user;
+};
+
+class COsControl {
+    public:
+    /* 0004 */ uint32_t m_flags;
+    /* 0008 */ COsDialog* m_dialog;
+    /* 000C */ int16_t m_id;
+    /* 0010 */ int32_t m_type;
+    /* 0014 */ void* m_handle;
+    /* 0018 */ OsGuiCallback m_callback;
+    /* 001C */ void* m_callbackParam;
+    /* 0020 */ COsMenu* m_contextMenu;
+    /* 0024 */ int32_t m_contextMenuEnabled;
+    /* 0028 */ int32_t m_redrawLevel;
+
+    virtual ~COsControl();
+    virtual void OnDestroy();
+    virtual int32_t OnEvent(int32_t itemId, int32_t notifyCode, int32_t code);
+    virtual int32_t OnDraw(void* dc, uint32_t state, CiRect& rect);
+    virtual void* OnSetColors(void* dc);
+    virtual int32_t OnReturn();
+    virtual int32_t OnEscape();
+    virtual int32_t OnMouseDown();
+    virtual int32_t OnMouseUp();
+    virtual void OnMouseMove(int32_t x, int32_t y);
+    virtual void OnSizeChange();
+    virtual void OnTextChange();
+    virtual int32_t OnNotify(int32_t code, void* data);
+    virtual int32_t OnCommand(int32_t code);
+    virtual int32_t OnScroll(int32_t code);
+    virtual int32_t OnMouseWheel(int32_t delta);
+    virtual int32_t OnContextMenu(int32_t x, int32_t y);
+    virtual int32_t IsHandleFromControl(void* handle);
+    virtual int32_t CanDoClipboardAction(int32_t action);
+    virtual int32_t DoClipboardAction(int32_t action);
+    virtual void SetValue(int32_t value);
+    virtual int32_t GetValue();
+
+    int32_t SendEvent(int32_t event, int32_t code);
+};
+
+class COsEditBox : public COsControl {
+    public:
+    /* 002C */ int32_t m_filtersEnabled;
+    /* 0030 */ uint32_t m_filters;
+    /* 0034 */ int32_t m_selSize;
+
+    int32_t IsCharacterAllowed(char c);
+};
+
+class COsTreeView : public COsControl {
+    public:
+    /* 002C */ void* m_images;
+    /* 0030 */ TSGrowableArray<int32_t> m_unusedImageIDs;
+    /* 0040 */ int32_t m_dragging;
+    /* 0044 */ OsGuiTVDDInfo m_dragInfo;
+    /* 005C */ void* m_dragImage;
+    /* 0060 */ int32_t (*m_dragHandler)(const OsGuiTVDDInfo& info, void* param);
+    /* 0064 */ void* m_dragHandlerParam;
+    /* 0068 */ int32_t (*m_canEditFunc)(void* item, void* param);
+    /* 006C */ void* m_canEditParam;
+    /* 0070 */ void (*m_expandFunc)(void* item, void* param);
+    /* 0074 */ void* m_expandParam;
+    /* 0078 */ int32_t m_textLimit;
+    /* 007C */ int32_t m_filtersEnabled;
+    /* 0080 */ uint32_t m_filters;
+    /* 0084 */ TSGrowableArray<OsGuiTreeItemParams> m_itemParams;
+
+    void* GetEditControl();
+    int32_t IsCharacterAllowed(char c);
+};
+
+class COsTabControl : public COsControl {
+    public:
+    int32_t GetNumItems();
+    int32_t OnControlTab();
+};
+
+class COsDialog {
+    public:
+    /* 0004 */ void* m_handle;
+    /* 0008 */ void* m_tooltips;
+    /* 000C */ OsGuiCallback m_callback;
+    /* 0010 */ void* m_callbackParam;
+    /* 0014 */ TSGrowableArray<COsControl*> m_controls;
+    /* 0024 */ COsControl* m_cancelButton;
+    /* 0028 */ int32_t m_trackMouse;
+    /* 002C */ int32_t m_mouseInside;
+    /* 0030 */ int32_t m_needNewTrack;
+    /* 0034 */ int32_t m_tooltipsEnabled;
+    /* 0038 */ int32_t m_contextMenuEnabled;
+    /* 003C */ COsMenu* m_contextMenu;
+    /* 0040 */ uint32_t m_flags;
+    /* 0044 */ TSGrowableArray<void*> m_disabledWindows;
+    /* 0054 */ C2iVector m_minSize;
+
+    virtual void SetSize(int32_t width, int32_t height);
+
+    COsControl* FindControl(void* handle);
+    void* GetParentWindow();
+    int32_t HasFlag(uint32_t flag);
+    int32_t IsInFront();
+    int32_t OnCancel();
+    int32_t OnControlTab();
+    int32_t OnEvent(int32_t itemId, int32_t notifyCode, int32_t code);
+    int32_t ProcessMessage(void* message);
+};
+
+class COsMenuBar {
+    public:
+    /* 0000 */ TSGrowableArray<COsMenu*> m_menus;
+    /* 0010 */ void* m_windowHandle;
+    /* 0014 */ void* m_menuBarHandle;
+    /* 0018 */ void* m_accelerators;
+};
+
+void OsGuiBeep();
+void* OsGuiGetWindow(int32_t type);
+int32_t OsGuiIsModifierKeyDown(int32_t key);
+int32_t OsGuiProcessMessage(void* message);
+void OsGuiSetGxWindow(void* window);
+int32_t OsGuiMessageBox(void* parentWindow, int32_t style, const char* message, const char* title);
+void OsGuiSetWindowTitle(void* window, const char* title);
+
+#if !defined(_WIN32)
+enum OSGUIWINDOWMSG {
+    OS_GUI_WM_SIZE = 0,
+    OS_GUI_WM_MINIMIZE = 1,
+    OS_GUI_WM_DISPLAYCHANGE = 2,
+    OS_GUI_WM_SETFOCUS = 3,
+    OS_GUI_WM_KILLFOCUS = 4,
+};
+
+// ʕ •ᴥ•ʔ✿ Width and height are drawable pixels, delivered on the thread pumping SDL events ✿ ʕ •ᴥ•ʔ
+typedef void (*OsGuiWindowProc)(void* param, OSGUIWINDOWMSG message, int32_t width, int32_t height);
+
+// ʕ •ᴥ•ʔ✿ SDL2 window contract for Gx: window is an SDL_Window*, instance a VkInstance, surface a VkSurfaceKHR* ✿ ʕ •ᴥ•ʔ
+void OsGuiSetGxWindowProc(void* window, OsGuiWindowProc proc, void* param);
+void* OsGuiCreateGxWindow(const char* title, int32_t width, int32_t height, int32_t fullscreen);
+void OsGuiDestroyGxWindow(void* window);
+void OsGuiGetDrawableSize(void* window, int32_t* width, int32_t* height);
+void* OsGuiGetVulkanProcAddr();
+void OsGuiPollGxWindowState();
+int32_t OsGuiGetVulkanInstanceExtensions(void* window, uint32_t* count, const char** names);
+int32_t OsGuiCreateVulkanSurface(void* window, void* instance, void* surface);
+#endif
+
+#if defined(WOWDECOMP_APPLE) || defined(WOWDECOMP_LINUX)
+uint32_t OsGuiGetWindowFlags();
+float OsGuiGetPixelScale(void* window);
+#endif
+
+#endif
