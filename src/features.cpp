@@ -441,17 +441,18 @@ double game_num(int cat, int key) {
     return found == cat_row->nums.end() ? 0 : found->second;
 }
 
-int native_false(void* state) {
-    g_push_bool(state, 0);
-    return 1;
-}
-
 int native_item_tags(void* state) {
-    int id = arg_int(state, 1);
-    g_push_num(state, game_num(16, id));
-    g_push_num(state, game_num(17, id));
-    g_push_num(state, game_num(20, id));
-    return 3;
+    int key = arg_int(state, 1) & 0xFF00FFFF;
+    uint32_t low = static_cast<uint32_t>(game_num(16, key));
+    uint32_t mid = static_cast<uint32_t>(game_num(17, key));
+    uint32_t high = static_cast<uint32_t>(game_num(20, key));
+    uint64_t word = (low & 0x3fffffu) | (static_cast<uint64_t>(mid & 0x3fffffu) << 22) | (static_cast<uint64_t>(high & 0xfffffu) << 44);
+    g_push_num(state, 0);
+    g_push_num(state, 0);
+    g_push_num(state, static_cast<uint32_t>(word));
+    g_push_num(state, static_cast<uint32_t>(word >> 32));
+    g_push_num(state, word ? __builtin_ctzll(word) + 1 : 0);
+    return 5;
 }
 
 int native_item_extra(void* state) {
@@ -461,11 +462,131 @@ int native_item_extra(void* state) {
     return 2;
 }
 
-int native_affix_mask(void* state) {
-    for (int i = 0; i < 5; ++i) {
-        g_push_num(state, 0);
+void affix_word(int key, uint32_t& low_out, uint32_t& high_out) {
+    uint32_t low = static_cast<uint32_t>(game_num(16, key));
+    uint32_t mid = static_cast<uint32_t>(game_num(17, key));
+    uint32_t high = static_cast<uint32_t>(game_num(20, key));
+    uint64_t word = (low & 0x3fffffu) | (static_cast<uint64_t>(mid & 0x3fffffu) << 22) | (static_cast<uint64_t>(high & 0xfffffu) << 44);
+    if (word == 0) {
+        low = static_cast<uint32_t>(game_num(16, key & 0xffff));
+        mid = static_cast<uint32_t>(game_num(17, key & 0xffff));
+        high = static_cast<uint32_t>(game_num(20, key & 0xffff));
+        word = (low & 0x3fffffu) | (static_cast<uint64_t>(mid & 0x3fffffu) << 22) | (static_cast<uint64_t>(high & 0xfffffu) << 44);
     }
+    low_out = static_cast<uint32_t>(word);
+    high_out = static_cast<uint32_t>(word >> 32);
+}
+
+int native_affix_mask(void* state) {
+    int key = arg_int(state, 1);
+    uint32_t low = 0;
+    uint32_t high = 0;
+    affix_word(key, low, high);
+    int item = key & 0xffff;
+    int forge = (static_cast<unsigned>(key) >> 24) & 0xff;
+    if (forge > 3) {
+        forge = 0;
+    }
+    bool done = game_num(11, item | (forge << 24)) >= 100.0;
+    uint64_t word = static_cast<uint64_t>(low) | (static_cast<uint64_t>(high) << 32);
+    g_push_num(state, low);
+    g_push_num(state, high);
+    g_push_num(state, done ? low : 0);
+    g_push_num(state, done ? high : 0);
+    g_push_num(state, word ? __builtin_ctzll(word) + 1 : 0);
     return 5;
+}
+
+const char* db_record_string(const char* symbol, int id, int name_offset) {
+    if (id <= 0) {
+        return nullptr;
+    }
+    static std::map<const char*, uint8_t*> tables;
+    uint8_t*& table = tables[symbol];
+    if (!table) {
+        void* found = nullptr;
+        if (!syn_resolve(symbol, &found) || !found) {
+            return nullptr;
+        }
+        table = static_cast<uint8_t*>(found);
+    }
+    int32_t max_id = 0;
+    int32_t min_id = 0;
+    void** by_id = nullptr;
+    memcpy(&max_id, table + 0x0c, 4);
+    memcpy(&min_id, table + 0x10, 4);
+    memcpy(&by_id, table + 0x20, sizeof(by_id));
+    if (!by_id || id < min_id || id > max_id) {
+        return nullptr;
+    }
+    uint8_t* row = static_cast<uint8_t*>(by_id[id - min_id]);
+    if (!row) {
+        return nullptr;
+    }
+    const char* name = nullptr;
+    memcpy(&name, row + name_offset, sizeof(name));
+    return name && name[0] ? name : nullptr;
+}
+
+int native_affix_name(void* state) {
+    int id = arg_int(state, 1);
+    const char* name = nullptr;
+    if (id < 0) {
+        name = db_record_string("g_itemRandomSuffixDB", -id, 4);
+    } else if (id > 0) {
+        name = db_record_string("g_itemRandomPropertiesDB", id, 0x1c);
+    }
+    if (!name) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_str(state, name);
+    return 1;
+}
+
+int native_attunable_someone(void* state) {
+    int item = arg_int(state, 1) & 0xffff;
+    bool on = game_num(16, item) != 0 || game_num(17, item) != 0 || game_num(20, item) != 0;
+    for (int forge = 0; forge <= 3 && !on; ++forge) {
+        int key = item | (forge << 24);
+        on = game_num(11, key) > 0 || game_num(16, key) != 0 || game_num(17, key) != 0 || game_num(20, key) != 0;
+    }
+    g_push_bool(state, on ? 1 : 0);
+    return 1;
+}
+
+int native_can_attune(void* state) {
+    int item = arg_int(state, 1) & 0xffff;
+    bool on = false;
+    for (int forge = 0; forge <= 3 && !on; ++forge) {
+        int key = item | (forge << 24);
+        on = game_num(11, key) != 0 || game_num(16, key) != 0 || game_num(17, key) != 0 || game_num(20, key) != 0;
+    }
+    on = on || game_num(16, item) != 0 || game_num(17, item) != 0 || game_num(20, item) != 0;
+    g_push_num(state, on ? 1 : 0);
+    return 1;
+}
+
+int native_attuned_affix_count(void* state) {
+    (void)state;
+    int totals[4] = {};
+    for (int cat : {16, 17, 20}) {
+        GameCat* row = game_cat(cat);
+        if (!row) {
+            continue;
+        }
+        for (const auto& entry : row->nums) {
+            int forge = (static_cast<unsigned>(entry.first) >> 24) & 0xff;
+            if (forge > 3) {
+                forge = 0;
+            }
+            totals[forge] += __builtin_popcount(static_cast<uint32_t>(entry.second + 0.01));
+        }
+    }
+    for (int total : totals) {
+        g_push_num(state, total);
+    }
+    return 4;
 }
 
 int forge_of(int key) {
@@ -692,6 +813,13 @@ const char* item_icon(int display) {
 
 int native_item_info(void* state) {
     int id = arg_int(state, 1);
+    if (id <= 0 && g_is_str && g_is_str(state, 1)) {
+        const char* text = g_to_str(state, 1, nullptr);
+        const char* mark = text ? strstr(text, "item:") : nullptr;
+        if (mark) {
+            id = atoi(mark + 5);
+        }
+    }
     if (id < 0 || id >= static_cast<int>(g_items.size()) || !g_items[static_cast<size_t>(id)].on) {
         g_push_nil(state);
         return 1;
@@ -1156,7 +1284,7 @@ void register_natives() {
     register_cmc("SetCustomGameDataString", native_set_game_string);
     register_cmc("NotifyServer", native_notify);
     register_cmc("SynastriaSafeInvoke", native_safe_invoke);
-    register_cmc("GetAffixNameCustom", native_empty);
+    register_cmc("GetAffixNameCustom", native_affix_name);
     register_cmc("Custom_GetZoneName", native_empty);
     register_cmc("Custom_GetQuestName", native_empty);
     register_cmc("Custom_GetSpellDesc", native_empty);
@@ -1167,11 +1295,11 @@ void register_natives() {
     register_cmc("CalculateAttunableCount", native_zero);
     register_cmc("CalculateAttunableAffixCount", native_attunable_affixes);
     register_cmc("CalculateAttunedCount", native_attuned_count);
-    register_cmc("CalculateAttunedAffixCount", native_zero);
+    register_cmc("CalculateAttunedAffixCount", native_attuned_affix_count);
     register_cmc("CalculateAttunedCountHigh", native_zero);
-    register_cmc("CanAttuneItemHelperEx", native_zero);
+    register_cmc("CanAttuneItemHelperEx", native_can_attune);
     register_cmc("HasAttunedAnyVariantEx", native_has_attuned);
-    register_cmc("IsAttunableBySomeone", native_false);
+    register_cmc("IsAttunableBySomeone", native_attunable_someone);
     register_cmc("GetItemTagsCustom", native_item_tags);
     register_cmc("GetItemExtraCustom", native_item_extra);
     register_cmc("GetItemAffixMask", native_affix_mask);
