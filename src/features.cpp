@@ -1239,6 +1239,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_item_select.inc"
 #include "natives/custom_clear_dressup_facing.inc"
 #include "natives/custom_set_dressup_facing.inc"
+#include "natives/debug_set_enable_zone_item_cache.inc"
 #include "natives/get_safe_invoke_queue.inc"
 #include "natives/set_item_tracker_class_mask.inc"
 #include "natives/custom_get_transmog_enchant.inc"
@@ -1564,7 +1565,7 @@ void register_natives() {
     register_cmc("CalculateAttunedCount", native_attuned_count);
     register_cmc("CalculateAttunedAffixCount", native_attuned_affix_count);
     register_cmc("CalculateAttunedCountHigh", native_attuned_high);
-    register_cmc("Debug_SetEnableZoneItemCache", stub_native);
+    register_cmc("Debug_SetEnableZoneItemCache", native_debug_zone_item_cache);
     register_cmc("Custom_GetIdFromLink", native_id_from_link);
     register_cmc("CanAttuneItemHelperEx", native_can_attune);
     register_cmc("HasAttunedAnyVariantEx", native_has_attuned);
@@ -1582,6 +1583,7 @@ void register_natives() {
     for (const char* name : kStubs) {
         g_register(name, stub_native);
     }
+    zone_cache_off();
     g_natives_ready = true;
     log_line("registered CMC natives and %zu custom stubs", sizeof(kStubs) / sizeof(kStubs[0]));
 }
