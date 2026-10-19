@@ -1127,6 +1127,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 
 #include "natives/custom_get_current_zone.inc"
 #include "natives/custom_get_zone_name.inc"
+#include "natives/custom_zone_contains.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1141,7 +1142,7 @@ const char* kStubs[] = {
     "ItemLocGetObjCount", "ItemLocGetObjAt", "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocItemIsInZone", "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
-    "Custom_GetPrequest", "Custom_ZoneContains",
+    "Custom_GetPrequest",
     "Custom_GetCurrentZoneOur", "Custom_GetQuestData",
     "Custom_GetQuestReq", "Custom_GetQuestCanAccept", "Custom_GetQuestCompleted",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
@@ -1375,6 +1376,7 @@ void register_natives() {
     register_cmc("SynastriaSafeInvoke", native_safe_invoke);
     register_cmc("GetAffixNameCustom", native_affix_name);
     register_cmc("Custom_GetZoneName", native_get_zone_name);
+    register_cmc("Custom_ZoneContains", native_zone_contains);
     register_cmc("Custom_GetCurrentZone", native_get_current_zone);
     register_cmc("Custom_GetQuestName", native_empty);
     register_cmc("Custom_GetSpellDesc", native_empty);
