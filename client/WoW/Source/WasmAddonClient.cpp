@@ -1,0 +1,1924 @@
+#include "WoW/Source/WasmAddonClient.h"
+#include "Engine/Source/Base/Status.h"
+#include "WoW/Source/Ui/AddOns.h"
+#include "WoW/Source/Ui/AwesomeWotlk.h"
+#include "WoW/Source/Ui/AuctionHouse.h"
+#include "WoW/Source/Ui/ChatFrame.h"
+#include "WoW/Source/Ui/ScriptEvents.h"
+#include "WoW/Source/Ui/WasmConfirmUi.h"
+#include "WoW/Source/Ui/WaylandFrame.h"
+#include "WoW/Source/Ui/WaylandFrame.h"
+#include "WoW/Source/WowSvcs/WowSvcsClient/ClientServices.h"
+#include "Engine/Source/ConsoleBase/ConsoleCommand.h"
+#include "Engine/Source/ConsoleBase/IConsole.h"
+#include "Engine/Source/ConsoleBase/Types.h"
+#include "Engine/Source/Storm/Source/MD5.h"
+#include "Engine/Source/Base/Handle.h"
+#include "Engine/Source/Frame/CSimpleTexture.h"
+#include "Engine/Source/FrameScript/FrameScript.h"
+#include "Engine/Source/Gx/Gx.h"
+#include "Engine/Source/Services/Texture.h"
+#include "Engine/Source/Tempest/CiRect.h"
+#include "Engine/Source/FrameXML/FrameXML.h"
+#include "Engine/Source/Os/TimeManager.h"
+#include "Engine/Source/WasmAddon/WasmAddonManager.h"
+#include "Engine/Source/WasmAddon/WasmConfirm.h"
+#include "Engine/Source/WasmAddon/WasmManifest.h"
+#include "Engine/Source/lua-5.1/src/lua.h"
+#include "Engine/Source/lua-5.1/src/lauxlib.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#if defined(_MSC_VER)
+#define strcasecmp _stricmp
+#else
+#include <strings.h>
+#endif
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <set>
+
+bool LoadAddOn(const char* name, bool demandLoad, CStatus* status);
+
+namespace {
+
+namespace fs = std::filesystem;
+
+struct CanvasPixels {
+    std::vector<uint8_t> bgra;
+    int32_t width = 0;
+    int32_t height = 0;
+};
+
+std::map<uint64_t, CanvasPixels> g_canvas;
+
+void CanvasFill(EGxTexCommand command, uint32_t, uint32_t, uint32_t, uint32_t, void* user, uint32_t& stride, const void*& texels) {
+    if (command != GxTex_Lock && command != GxTex_Latch) return;
+    auto it = g_canvas.find((uint64_t)(uintptr_t)user);
+    if (it == g_canvas.end() || it->second.bgra.empty()) return;
+    stride = (uint32_t)it->second.width * 4;
+    texels = it->second.bgra.data();
+}
+
+struct TaintScope {
+    const char* saved;
+    explicit TaintScope(const std::string& addonId) : saved(lua_tainted) {
+        m_taint = "WasmAddon:" + addonId;
+        lua_tainted = m_taint.c_str();
+    }
+    ~TaintScope() { lua_tainted = saved; }
+    std::string m_taint;
+};
+
+// ʕ •ᴥ•ʔ✿ Game-facing services: every call goes through the existing Lua/UI layer on the main thread ✿ ʕ •ᴥ•ʔ
+class ClientHostServices final : public WasmAddon::IWasmHostServices {
+public:
+    void DropUiReferences() { m_ui.clear(); m_luaRefs.clear(); m_nextLua.clear(); }
+
+    // ʕ ●ᴥ●ʔ✿ All Lua work runs under lua_cpcall so a replaced global or erroring __index cannot longjmp through Wasmtime ✿ ʕ ●ᴥ●ʔ
+    bool ChatPrint(const std::string& addonId, const std::string& text) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, &addonId, &text, 0, nullptr};
+        return lua_cpcall(L, &TrampChat, &ctx) == 0 && ctx.ok;
+    }
+
+    bool GetInventorySnapshot(std::vector<WasmAddon::InventoryItem>& out) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, nullptr, 0, &out};
+        return lua_cpcall(L, &TrampInventory, &ctx) == 0 && ctx.ok;
+    }
+
+    bool GetUnitSnapshot(const std::vector<std::string>& tokens, std::vector<WasmAddon::UnitRecord>& out) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, nullptr, 0, nullptr};
+        ctx.tokens = &tokens;
+        ctx.units = &out;
+        return lua_cpcall(L, &TrampUnits, &ctx) == 0 && ctx.ok;
+    }
+
+    bool GetAuctionSnapshot(int32_t kind, WasmAddon::AuctionSnapshot& out) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, nullptr, (uint64_t)(int64_t)kind, nullptr};
+        ctx.auction = &out;
+        return lua_cpcall(L, &TrampAuction, &ctx) == 0 && ctx.ok;
+    }
+
+    uint64_t UiCreate(const std::string& addonId, const std::string& kind) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return 0;
+        HostCallCtx ctx{this, &addonId, &kind, 0, nullptr};
+        return lua_cpcall(L, &TrampUiCreate, &ctx) == 0 ? ctx.result : 0;
+    }
+
+    bool UiSetText(uint64_t handle, const std::string& text) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, &text, handle, nullptr};
+        return lua_cpcall(L, &TrampUiSetText, &ctx) == 0 && ctx.ok;
+    }
+
+    uint64_t SurfaceOpen(const std::string& addonId, const std::string& spec, int32_t width, int32_t height, std::string& error) override {
+        (void)addonId;
+        char text[256] = {};
+        int32_t ref = LUA_NOREF;
+        int32_t id = WaylandFrame_Open(spec.c_str(), width, height, &ref, text, sizeof(text));
+        if (!id || ref == LUA_NOREF) {
+            error = text[0] ? text : "surface failed";
+            return 0;
+        }
+        uint64_t handle = m_nextHandle++;
+        m_ui[handle] = {ref, LUA_NOREF, WidgetKind::Surface, id};
+        return handle;
+    }
+
+    uint64_t UiSpawn(const std::string& addonId, uint64_t parentHost, const std::string& kind) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return 0;
+        HostCallCtx ctx{this, &addonId, &kind, 0, nullptr};
+        ctx.parent = parentHost;
+        return lua_cpcall(L, &TrampUiSpawn, &ctx) == 0 ? ctx.result : 0;
+    }
+
+    bool UiStyle(uint64_t handle, int32_t op, const uint8_t* data, uint32_t len) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, nullptr, handle, nullptr};
+        ctx.op = op;
+        ctx.bytes = data;
+        ctx.byteLen = len;
+        return lua_cpcall(L, &TrampUiStyle, &ctx) == 0 && ctx.ok;
+    }
+
+    bool UiBind(uint64_t handle, int32_t guestHandle, const std::string& event) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, &event, handle, nullptr};
+        ctx.guest = guestHandle;
+        return lua_cpcall(L, &TrampUiBind, &ctx) == 0 && ctx.ok;
+    }
+
+    bool UiGetText(uint64_t handle, std::string& out) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, nullptr, handle, nullptr};
+        ctx.textOut = &out;
+        return lua_cpcall(L, &TrampUiGetText, &ctx) == 0 && ctx.ok;
+    }
+
+    bool GetUnitNames(const std::vector<std::string>& tokens, std::vector<std::pair<uint32_t, std::string>>& out) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        HostCallCtx ctx{this, nullptr, nullptr, 0, nullptr};
+        ctx.tokens = &tokens;
+        ctx.names = &out;
+        return lua_cpcall(L, &TrampUnitNames, &ctx) == 0 && ctx.ok;
+    }
+
+    int ExecuteLua(const std::string& addonId, const std::string& chunkName, const std::string& source, std::string& error) override {
+        return RunLua(addonId, chunkName, source.data(), source.size(), error);
+    }
+
+    int LoadLuaPath(const std::string& addonId, const std::string& addonRoot, const std::string& absolutePath, std::string& error) override {
+        std::set<std::string> seen;
+        return LoadLuaFile(addonId, addonRoot, absolutePath, error, seen, 0);
+    }
+
+    int LoadNamedAddon(const std::string& name, std::string& error) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) { error = "lua state unavailable"; return WasmAddon::ErrUnavailable; }
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, "IsAddOnLoaded");
+        if (lua_isfunction(L, -1)) {
+            lua_pushstring(L, name.c_str());
+            if (lua_pcall(L, 1, 1, 0) == 0 && lua_toboolean(L, -1)) {
+                lua_settop(L, top);
+                return WasmAddon::Ok;
+            }
+        }
+        lua_settop(L, top);
+        CStatus status;
+        if (!LoadAddOn(name.c_str(), true, &status)) {
+            error = "addon not found or not loadable: " + name;
+            return WasmAddon::ErrNotFound;
+        }
+        return WasmAddon::Ok;
+    }
+
+    int CallLua(const std::string& addonId, const uint8_t* req, uint32_t reqLen, std::vector<uint8_t>& out, std::string& error) override {
+        return DoCallLua(addonId, req, reqLen, out, error);
+    }
+
+    int AwesomeCall(const std::string& addonId, const uint8_t* req, uint32_t reqLen, std::vector<uint8_t>& out, std::string& error) override {
+        return DoAwesomeCall(addonId, req, reqLen, out, error);
+    }
+
+    int BindLua(const std::string& addonId, int32_t handle, const std::string& script, std::string& error) override {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) { error = "lua state unavailable"; return WasmAddon::ErrUnavailable; }
+        int ref = LuaRef(addonId, handle);
+        if (ref == LUA_NOREF) { error = "bad object"; return WasmAddon::ErrInvalidHandle; }
+        const char* name = nullptr;
+        if (script == "OnClick") name = "OnClick";
+        else if (script == "OnEnter") name = "OnEnter";
+        else if (script == "OnLeave") name = "OnLeave";
+        else if (script == "OnEnterPressed") name = "OnEnterPressed";
+        else if (script == "OnEscapePressed") name = "OnEscapePressed";
+        else if (script == "OnTextChanged") name = "OnTextChanged";
+        else { error = "unknown script"; return WasmAddon::ErrInvalidArgument; }
+        TaintScope taint(addonId);
+        if (!InstallUiSignal(L, ref, name, handle, script)) { error = "script rejected"; return WasmAddon::ErrGeneric; }
+        return WasmAddon::Ok;
+    }
+
+    void ReleaseLua(const std::string& addonId) override {
+        lua_State* L = FrameScript_GetContext();
+        auto it = m_luaRefs.find(addonId);
+        if (it == m_luaRefs.end()) return;
+        if (L) for (auto& entry : it->second) luaL_unref(L, LUA_REGISTRYINDEX, entry.second);
+        m_luaRefs.erase(it);
+        m_nextLua.erase(addonId);
+    }
+
+    void UiDestroy(uint64_t handle) override {
+        auto it = m_ui.find(handle);
+        if (it != m_ui.end() && it->second.surfaceId) WaylandFrame_Close(it->second.surfaceId);
+        if (it != m_ui.end() && it->second.canvasImage) {
+            HandleClose(reinterpret_cast<HOBJECT>(it->second.canvasImage));
+            g_canvas.erase(handle);
+        }
+        lua_State* L = FrameScript_GetContext();
+        if (it == m_ui.end() || !L) return;
+        if (L != m_seenState) { m_ui.erase(it); return; }
+        int top = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.mainRef);
+        if (lua_isuserdata(L, -1) || lua_istable(L, -1)) {
+            lua_getfield(L, -1, "Hide");
+            if (lua_isfunction(L, -1)) {
+                lua_pushvalue(L, -2);
+                lua_pcall(L, 1, 0, 0);
+            }
+        }
+        lua_settop(L, top);
+        luaL_unref(L, LUA_REGISTRYINDEX, it->second.mainRef);
+        if (it->second.textRef != it->second.mainRef && it->second.textRef != LUA_NOREF)
+            luaL_unref(L, LUA_REGISTRYINDEX, it->second.textRef);
+        m_ui.erase(it);
+    }
+
+    WasmAddon::ConfirmExecResult ExecuteChatSend(const WasmAddon::ConfirmRequest& request) override {
+        int32_t rc = CGChat::SendNative(request.chatType, 0xFFFFFFFEu, request.target.c_str(), request.message.c_str());
+        return {rc == 0, rc};
+    }
+
+    WasmAddon::ConfirmExecResult ExecuteAuctionBid(const WasmAddon::ConfirmRequest& request) override {
+        if (request.auctionIndex < 1) return {false, 1};
+        int32_t rc = CGAuctionHouse::PlaceBidNative(request.listKind, request.auctionIndex - 1, request.bid);
+        return {rc == 0, rc};
+    }
+
+    void ConfirmShow(const WasmAddon::ConfirmRequest& request) override;
+    void ConfirmHide(uint32_t requestId) override;
+
+    bool ResolveAuctionIdentity(int32_t listKind, uint32_t index, WasmAddon::AuctionIdentity& out) override {
+        if (index < 1) return false;
+        AuctionItemInfo* auction = nullptr;
+        uint32_t slot = index - 1;
+        if (listKind == 0) auction = GetListAuction(slot);
+        else if (listKind == 1) auction = GetOwnerAuction(slot);
+        else if (listKind == 2) auction = GetBidderAuction(slot);
+        if (!auction) return false;
+        out.auctionId = auction->m_auctionID;
+        out.itemId = auction->m_itemID;
+        out.count = auction->m_count;
+        out.buyout = auction->m_buyout;
+        out.minBid = auction->m_minBid;
+        return true;
+    }
+
+    void Log(const std::string& message) override {
+        ConsoleWrite(message.c_str(), DEFAULT_COLOR);
+        // ʕ ◕ᴥ◕ ʔ✿ Mirror to stdout: the in-game console has no file sink, headless runs need this ✿ ʕ ◕ᴥ◕ ʔ
+        if (!ConsoleLogTeeEnabled()) {
+            fprintf(stdout, "%s\n", message.c_str());
+            fflush(stdout);
+        }
+    }
+
+private:
+    struct HostCallCtx {
+        ClientHostServices* self;
+        const std::string* s1;
+        const std::string* s2;
+        uint64_t handle;
+        std::vector<WasmAddon::InventoryItem>* items;
+        const std::vector<std::string>* tokens = nullptr;
+        std::vector<WasmAddon::UnitRecord>* units = nullptr;
+        WasmAddon::AuctionSnapshot* auction = nullptr;
+        bool ok = false;
+        uint64_t result = 0;
+        uint64_t parent = 0;
+        int32_t op = 0;
+        const uint8_t* bytes = nullptr;
+        uint32_t byteLen = 0;
+        std::vector<std::pair<uint32_t, std::string>>* names = nullptr;
+        std::string* textOut = nullptr;
+        int32_t guest = 0;
+    };
+    static int TrampChat(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoChatPrint(L, *c->s1, *c->s2); return 0; }
+    static int TrampInventory(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoInventory(L, *c->items); return 0; }
+    static int TrampUiCreate(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->result = c->self->DoUiCreate(L, *c->s1, *c->s2); return 0; }
+    static int TrampUiSpawn(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->result = c->self->DoUiSpawn(L, *c->s1, c->parent, *c->s2); return 0; }
+    static int TrampUiStyle(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoUiStyle(L, c->handle, c->op, c->bytes, c->byteLen); return 0; }
+    static int TrampUiSetText(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoUiSetText(L, c->handle, *c->s2); return 0; }
+    static int TrampUnits(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoUnits(L, *c->tokens, *c->units); return 0; }
+    static int TrampAuction(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoAuction(L, (int32_t)c->handle, *c->auction); return 0; }
+    static int TrampUiBind(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoUiBind(L, c->handle, c->guest, *c->s2); return 0; }
+    static int TrampUiGetText(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoUiGetText(L, c->handle, *c->textOut); return 0; }
+    static int TrampUnitNames(lua_State* L) { auto* c = (HostCallCtx*)lua_touserdata(L, 1); c->ok = c->self->DoUnitNames(L, *c->tokens, *c->names); return 0; }
+
+    static double UnitCall(lua_State* L, const char* fn, const std::string& token, int32_t retIndex, bool* isBool = nullptr) {
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, fn);
+        lua_pushstring(L, token.c_str());
+        double result = 0;
+        if (lua_pcall(L, 1, LUA_MULTRET, 0) == 0 && lua_gettop(L) >= top + retIndex) {
+            if (isBool) *isBool = lua_toboolean(L, top + retIndex) != 0;
+            else result = lua_tonumber(L, top + retIndex);
+        }
+        lua_settop(L, top);
+        return result;
+    }
+
+    bool DoUnits(lua_State* L, const std::vector<std::string>& tokens, std::vector<WasmAddon::UnitRecord>& out) {
+        TaintScope taint("units");
+        for (size_t i = 0; i < tokens.size(); i++) {
+            WasmAddon::UnitRecord record;
+            record.tokenIndex = (uint32_t)i;
+            bool exists = false;
+            UnitCall(L, "UnitExists", tokens[i], 1, &exists);
+            if (exists) {
+                bool dead = false, ghost = false, isPlayer = false;
+                UnitCall(L, "UnitIsDead", tokens[i], 1, &dead);
+                UnitCall(L, "UnitIsGhost", tokens[i], 1, &ghost);
+                UnitCall(L, "UnitIsPlayer", tokens[i], 1, &isPlayer);
+                record.flags = 1 | ((dead || ghost) ? 2 : 0) | (isPlayer ? 4 : 0) | (tokens[i] == "player" ? 8 : 0);
+                record.health = (uint32_t)UnitCall(L, "UnitHealth", tokens[i], 1);
+                record.healthMax = (uint32_t)UnitCall(L, "UnitHealthMax", tokens[i], 1);
+                record.power = (uint32_t)UnitCall(L, "UnitPower", tokens[i], 1);
+                record.powerMax = (uint32_t)UnitCall(L, "UnitPowerMax", tokens[i], 1);
+                record.powerType = (uint32_t)UnitCall(L, "UnitPowerType", tokens[i], 1);
+                record.level = (uint32_t)UnitCall(L, "UnitLevel", tokens[i], 1);
+                record.classId = (uint32_t)UnitCall(L, "UnitClass", tokens[i], 3);
+                record.raceId = (uint32_t)UnitCall(L, "UnitRace", tokens[i], 3);
+            }
+            out.push_back(record);
+        }
+        return true;
+    }
+
+    // ʕ •ᴥ•ʔ✿ UnitName's later returns are realm; only a string name leaves the host ✿ ʕ •ᴥ•ʔ
+    static std::string UnitNameOf(lua_State* L, const std::string& token) {
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, "UnitName");
+        lua_pushstring(L, token.c_str());
+        std::string name;
+        if (lua_pcall(L, 1, LUA_MULTRET, 0) == 0 && lua_type(L, top + 1) == LUA_TSTRING) {
+            size_t len = 0;
+            const char* text = lua_tolstring(L, top + 1, &len);
+            if (text && len) {
+                char buf[64];
+                size_t n = len < sizeof(buf) ? len : sizeof(buf);
+                std::memcpy(buf, text, n);
+                name = WasmAddon::SanitizeDisplayText(std::string(buf, buf + n));
+            }
+        }
+        lua_settop(L, top);
+        return name;
+    }
+
+    bool DoUnitNames(lua_State* L, const std::vector<std::string>& tokens, std::vector<std::pair<uint32_t, std::string>>& out) {
+        TaintScope taint("units");
+        out.clear();
+        for (size_t i = 0; i < tokens.size(); i++)
+            out.emplace_back((uint32_t)i, UnitNameOf(L, tokens[i]));
+        return true;
+    }
+
+    bool DoAuction(lua_State* L, int32_t kind, WasmAddon::AuctionSnapshot& out) {
+        TaintScope taint("auction");
+        static const char* kKinds[] = {"list", "owner", "bidder"};
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, "UnitName");
+        lua_pushstring(L, "player");
+        std::string playerName = lua_pcall(L, 1, 1, 0) == 0 && lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+        lua_settop(L, top);
+        lua_getfield(L, LUA_GLOBALSINDEX, "GetNumAuctionItems");
+        lua_pushstring(L, kKinds[kind]);
+        if (lua_pcall(L, 1, 2, 0) != 0) { lua_settop(L, top); return false; }
+        int32_t num = (int32_t)lua_tonumber(L, -2);
+        out.total = (uint32_t)lua_tonumber(L, -1);
+        out.flags = 1;
+        lua_settop(L, top);
+        for (int32_t i = 1; i <= num && i <= 200; i++) {
+            lua_getfield(L, LUA_GLOBALSINDEX, "GetAuctionItemInfo");
+            lua_pushstring(L, kKinds[kind]);
+            lua_pushnumber(L, i);
+            if (lua_pcall(L, 2, 13, 0) != 0) { lua_settop(L, top); continue; }
+            int base = lua_gettop(L) - 12;
+            WasmAddon::AuctionRecord record;
+            record.index = (uint32_t)i;
+            record.count = (uint32_t)lua_tonumber(L, base + 2);
+            record.quality = (uint32_t)lua_tonumber(L, base + 3);
+            record.minBid = (uint32_t)lua_tonumber(L, base + 6);
+            record.minIncrement = (uint32_t)lua_tonumber(L, base + 7);
+            record.buyout = (uint32_t)lua_tonumber(L, base + 8);
+            record.bid = (uint32_t)lua_tonumber(L, base + 9);
+            bool highBidder = lua_isnumber(L, base + 10) && lua_tonumber(L, base + 10) == 1.0;
+            std::string owner = lua_isstring(L, base + 11) ? lua_tostring(L, base + 11) : "";
+            bool sold = lua_tonumber(L, base + 12) != 0;
+            record.flags = (highBidder ? 1 : 0) | (!playerName.empty() && owner == playerName ? 2 : 0) | (sold ? 4 : 0);
+            lua_settop(L, top);
+            // ʕ ◕ᴥ◕ ʔ✿ Item identity comes from parsing our own link format, never from guest input ✿ ʕ ◕ᴥ◕ ʔ
+            lua_getfield(L, LUA_GLOBALSINDEX, "GetAuctionItemLink");
+            lua_pushstring(L, kKinds[kind]);
+            lua_pushnumber(L, i);
+            if (lua_pcall(L, 2, 1, 0) == 0 && lua_isstring(L, -1)) {
+                const char* link = lua_tostring(L, -1);
+                const char* item = link ? std::strstr(link, "item:") : nullptr;
+                if (item) record.itemId = (uint32_t)std::strtoul(item + 5, nullptr, 10);
+            }
+            lua_settop(L, top);
+            lua_getfield(L, LUA_GLOBALSINDEX, "GetAuctionItemTimeLeft");
+            lua_pushstring(L, kKinds[kind]);
+            lua_pushnumber(L, i);
+            if (lua_pcall(L, 2, 1, 0) == 0) record.timeLeft = (uint32_t)lua_tonumber(L, -1);
+            lua_settop(L, top);
+            out.records.push_back(record);
+        }
+        return true;
+    }
+
+    bool DoChatPrint(lua_State* L, const std::string& addonId, const std::string& text) {
+        TaintScope taint(addonId);
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, "DEFAULT_CHAT_FRAME");
+        if (lua_isnil(L, -1)) { lua_settop(L, top); return false; }
+        lua_getfield(L, -1, "AddMessage");
+        lua_pushvalue(L, -2);
+        lua_pushstring(L, ("[" + addonId + "] " + text).c_str());
+        bool ok = lua_pcall(L, 2, 0, 0) == 0;
+        lua_settop(L, top);
+        return ok;
+    }
+
+    bool DoInventory(lua_State* L, std::vector<WasmAddon::InventoryItem>& out) {
+        TaintScope taint("inventory");
+        int top = lua_gettop(L);
+        for (int32_t bag = 0; bag <= 4; bag++) {
+            int32_t slots = CallInt(L, "GetContainerNumSlots", bag);
+            for (int32_t slot = 1; slot <= slots; slot++) {
+                int32_t itemId = CallInt2(L, "GetContainerItemID", bag, slot);
+                if (!itemId) continue;
+                int32_t count = CallSecondInt(L, "GetContainerItemInfo", bag, slot);
+                out.push_back({(uint32_t)bag, (uint32_t)slot, (uint32_t)itemId, (uint32_t)(count > 0 ? count : 1)});
+            }
+        }
+        lua_settop(L, top);
+        return true;
+    }
+
+    uint64_t DoUiCreate(lua_State* L, const std::string& addonId, const std::string& kind) {
+        TaintScope taint(addonId);
+        TrackState(L);
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, "UIParent");
+        if (lua_isnil(L, -1)) { lua_settop(L, top); return 0; }
+        int32_t textRef = LUA_NOREF;
+        if (kind == "frame") {
+            lua_getfield(L, LUA_GLOBALSINDEX, "CreateFrame");
+            lua_pushstring(L, "Frame");
+            lua_pushnil(L);
+            lua_pushvalue(L, top + 1);
+            if (lua_pcall(L, 4, 1, 0) != 0) { lua_settop(L, top); return 0; }
+            lua_getfield(L, -1, "SetSize");
+            lua_pushvalue(L, -2); lua_pushnumber(L, 200); lua_pushnumber(L, 60);
+            lua_pcall(L, 3, 0, 0);
+            lua_getfield(L, -1, "SetPoint");
+            lua_pushvalue(L, -2); lua_pushstring(L, "CENTER");
+            lua_pcall(L, 2, 0, 0);
+            textRef = MakeFontString(L);
+            if (textRef == LUA_NOREF) { lua_settop(L, top); return 0; }
+            int32_t frameRef = luaL_ref(L, LUA_REGISTRYINDEX);
+            uint64_t handle = m_nextHandle++;
+            m_ui[handle] = {frameRef, textRef, WidgetKind::Frame};
+            lua_settop(L, top);
+            return handle;
+        }
+        textRef = MakeFontString(L);
+        lua_settop(L, top);
+        if (textRef == LUA_NOREF) return 0;
+        uint64_t handle = m_nextHandle++;
+        m_ui[handle] = {textRef, textRef, WidgetKind::FontString};
+        return handle;
+    }
+
+    bool PushParent(lua_State* L, uint64_t parentHost) {
+        if (parentHost == 0) {
+            lua_getfield(L, LUA_GLOBALSINDEX, "UIParent");
+            return !lua_isnil(L, -1);
+        }
+        auto it = m_ui.find(parentHost);
+        if (it == m_ui.end() || it->second.mainRef == LUA_NOREF) return false;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.mainRef);
+        return lua_istable(L, -1) || lua_isuserdata(L, -1);
+    }
+
+    template <class Push>
+    bool CallOn(lua_State* L, int32_t ref, const char* method, int extra, Push push) {
+        int top = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (!lua_istable(L, -1) && !lua_isuserdata(L, -1)) { lua_settop(L, top); return false; }
+        lua_getfield(L, -1, method);
+        if (!lua_isfunction(L, -1)) { lua_settop(L, top); return false; }
+        lua_pushvalue(L, -2);
+        push(L);
+        bool ok = lua_pcall(L, 1 + extra, 0, 0) == 0;
+        lua_settop(L, top);
+        return ok;
+    }
+
+    static int32_t ReadI32(const uint8_t* p) {
+        return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
+    }
+
+    static int32_t MakeChildFont(lua_State* L) {
+        int parent = lua_gettop(L);
+        lua_getfield(L, parent, "CreateFontString");
+        if (!lua_isfunction(L, -1)) return LUA_NOREF;
+        lua_pushvalue(L, parent);
+        lua_pushnil(L);
+        lua_pushstring(L, "OVERLAY");
+        lua_pushstring(L, "GameFontHighlightSmall");
+        if (lua_pcall(L, 4, 1, 0) != 0) return LUA_NOREF;
+        return luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    static int32_t MakeChildTexture(lua_State* L) {
+        int parent = lua_gettop(L);
+        lua_getfield(L, parent, "CreateTexture");
+        if (!lua_isfunction(L, -1)) return LUA_NOREF;
+        lua_pushvalue(L, parent);
+        lua_pushnil(L);
+        lua_pushstring(L, "ARTWORK");
+        if (lua_pcall(L, 3, 1, 0) != 0) return LUA_NOREF;
+        return luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    static bool MakeChildFrame(lua_State* L, const char* type, bool statusBar, bool editBox, int32_t& ref) {
+        int parent = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, "CreateFrame");
+        lua_pushstring(L, type);
+        lua_pushnil(L);
+        lua_pushvalue(L, parent);
+        if (lua_pcall(L, 3, 1, 0) != 0) return false;
+        if (editBox) {
+            lua_getfield(L, -1, "SetFont");
+            if (lua_isfunction(L, -1)) {
+                lua_pushvalue(L, -2);
+                lua_pushstring(L, "Fonts\\FRIZQT__.TTF");
+                lua_pushnumber(L, 12);
+                if (lua_pcall(L, 3, 0, 0) != 0) lua_pop(L, 1);
+            } else {
+                lua_pop(L, 1);
+            }
+            lua_getfield(L, -1, "SetAutoFocus");
+            if (lua_isfunction(L, -1)) {
+                lua_pushvalue(L, -2);
+                lua_pushboolean(L, 0);
+                if (lua_pcall(L, 2, 0, 0) != 0) lua_pop(L, 1);
+            } else {
+                lua_pop(L, 1);
+            }
+            lua_getfield(L, -1, "SetTextInsets");
+            if (lua_isfunction(L, -1)) {
+                lua_pushvalue(L, -2);
+                lua_pushnumber(L, 0);
+                lua_pushnumber(L, 0);
+                lua_pushnumber(L, 0);
+                lua_pushnumber(L, 0);
+                if (lua_pcall(L, 5, 0, 0) != 0) lua_pop(L, 1);
+            } else {
+                lua_pop(L, 1);
+            }
+        }
+        if (statusBar) {
+            lua_getfield(L, -1, "SetStatusBarTexture");
+            lua_pushvalue(L, -2);
+            lua_pushstring(L, "Interface\\TargetingFrame\\UI-StatusBar");
+            lua_pcall(L, 2, 0, 0);
+            lua_getfield(L, -1, "SetMinMaxValues");
+            lua_pushvalue(L, -2);
+            lua_pushnumber(L, 0);
+            lua_pushnumber(L, 1);
+            lua_pcall(L, 3, 0, 0);
+        }
+        ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        return ref != LUA_NOREF;
+    }
+
+    uint64_t DoUiSpawn(lua_State* L, const std::string& addonId, uint64_t parentHost, const std::string& kind) {
+        TaintScope taint(addonId);
+        TrackState(L);
+        int top = lua_gettop(L);
+        if (!PushParent(L, parentHost)) { lua_settop(L, top); return 0; }
+        int32_t ref = LUA_NOREF;
+        WidgetKind wk = WidgetKind::Frame;
+        bool ok = false;
+        if (kind == "fontstring") {
+            ref = MakeChildFont(L);
+            ok = ref != LUA_NOREF;
+            wk = WidgetKind::FontString;
+        } else if (kind == "texture") {
+            ref = MakeChildTexture(L);
+            ok = ref != LUA_NOREF;
+            wk = WidgetKind::Texture;
+        } else if (kind == "canvas" || kind == "model" || kind == "frame" || kind == "statusbar" || kind == "button" || kind == "editbox" || kind == "scrollframe") {
+            const char* type = "Frame";
+            if (kind == "statusbar") type = "StatusBar";
+            else if (kind == "button") type = "Button";
+            else if (kind == "editbox") type = "EditBox";
+            else if (kind == "scrollframe") type = "ScrollFrame";
+            else if (kind == "model") type = "PlayerModel";
+            else if (kind == "canvas") type = "Frame";
+            ok = MakeChildFrame(L, type, kind == "statusbar", kind == "editbox", ref);
+            if (kind == "statusbar") wk = WidgetKind::StatusBar;
+            else if (kind == "button") wk = WidgetKind::Button;
+            else if (kind == "editbox") wk = WidgetKind::EditBox;
+            else if (kind == "scrollframe") wk = WidgetKind::ScrollFrame;
+            else if (kind == "canvas") wk = WidgetKind::Canvas;
+            else if (kind == "model") wk = WidgetKind::Model;
+            else wk = WidgetKind::Frame;
+        }
+        lua_settop(L, top);
+        if (!ok || ref == LUA_NOREF) {
+            if (ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, ref);
+            return 0;
+        }
+        uint64_t handle = m_nextHandle++;
+        int32_t textRef = (wk == WidgetKind::FontString || wk == WidgetKind::EditBox) ? ref : LUA_NOREF;
+        UiRefs refs{ref, textRef, wk};
+        if (wk == WidgetKind::Canvas) {
+            lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+            int32_t textureRef = MakeChildTexture(L);
+            lua_settop(L, top);
+            if (textureRef != LUA_NOREF) {
+                lua_rawgeti(L, LUA_REGISTRYINDEX, textureRef);
+                if (lua_isuserdata(L, -1)) refs.canvas = static_cast<CSimpleTexture*>(lua_touserdata(L, -1));
+                lua_pop(L, 1);
+                refs.textRef = textureRef;
+            }
+        }
+        m_ui[handle] = refs;
+        return handle;
+    }
+
+    bool CanvasWrite(uint64_t handle, int32_t width, int32_t height, const uint8_t* rgba, uint32_t len) override {
+        auto it = m_ui.find(handle);
+        if (it == m_ui.end() || it->second.kind != WidgetKind::Canvas || !it->second.canvas || !rgba) return false;
+        uint64_t need = (uint64_t)width * (uint64_t)height * 4;
+        if (width < 1 || height < 1 || need != len) return false;
+        CanvasPixels& store = g_canvas[handle];
+        store.width = width;
+        store.height = height;
+        store.bgra.resize((size_t)need);
+        for (uint32_t i = 0; i < len; i += 4) {
+            store.bgra[i] = rgba[i + 2];
+            store.bgra[i + 1] = rgba[i + 1];
+            store.bgra[i + 2] = rgba[i];
+            store.bgra[i + 3] = rgba[i + 3];
+        }
+        UiRefs& refs = it->second;
+        if (!refs.canvasImage || refs.canvasW != width || refs.canvasH != height) {
+            CGxTexFlags flags;
+            flags.m_filter = GxTex_Linear;
+            CTexture* image = TextureCreate((uint32_t)width, (uint32_t)height, GxTex_Argb8888, GxTex_Argb8888, flags, (void*)(uintptr_t)handle, CanvasFill, "WasmCanvas", 0);
+            if (!image) return false;
+            refs.canvas->SetTexture(image);
+            if (refs.canvasImage) HandleClose(reinterpret_cast<HOBJECT>(refs.canvasImage));
+            refs.canvasImage = image;
+            refs.canvasW = width;
+            refs.canvasH = height;
+        }
+        CGxTex* gx = TextureGetGxTex(refs.canvasImage, 0, nullptr);
+        if (!gx) return false;
+        CiRect rect;
+        rect.minY = 0;
+        rect.minX = 0;
+        rect.maxY = height;
+        rect.maxX = width;
+        GxTexUpdate(gx, rect, 1);
+        return true;
+    }
+
+    bool ModelSet(uint64_t handle, const std::string& spec) override {
+        auto it = m_ui.find(handle);
+        if (it == m_ui.end() || it->second.kind != WidgetKind::Model) return false;
+        lua_State* L = FrameScript_GetContext();
+        if (!L) return false;
+        const char* method = "SetModel";
+        std::string value = spec;
+        if (spec.rfind("unit:", 0) == 0) {
+            method = "SetUnit";
+            value = spec.substr(5);
+        } else if (!spec.empty() && spec.find_first_not_of("0123456789") == std::string::npos) {
+            method = "SetCreature";
+        }
+        int top = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.mainRef);
+        lua_getfield(L, -1, method);
+        if (!lua_isfunction(L, -1)) { lua_settop(L, top); return false; }
+        lua_pushvalue(L, -2);
+        if (std::strcmp(method, "SetCreature") == 0) lua_pushnumber(L, std::strtol(value.c_str(), nullptr, 10));
+        else lua_pushstring(L, value.c_str());
+        bool ok = lua_pcall(L, 2, 0, 0) == 0;
+        lua_settop(L, top);
+        return ok;
+    }
+
+    bool HookBind(const std::string& addonId, const std::string& name) override {
+        (void)addonId;
+        lua_State* L = FrameScript_GetContext();
+        if (!L || name.empty() || name.size() > 64) return false;
+        for (char c : name) {
+            bool okChar = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+            if (!okChar) return false;
+        }
+        static const char* kHook = R"lua(
+local name = ...
+local fn = _G[name]
+if type(fn) ~= "function" then return false end
+local function fire()
+    if WasmAddon_HookFire then WasmAddon_HookFire(name) end
+end
+if hooksecurefunc then hooksecurefunc(name, fire) else _G[name] = function(...) fire(); return fn(...) end end
+return true
+)lua";
+        if (luaL_loadbuffer(L, kHook, std::strlen(kHook), "WasmHook") != 0) { lua_pop(L, 1); return false; }
+        lua_pushstring(L, name.c_str());
+        if (lua_pcall(L, 1, 1, 0) != 0) { lua_pop(L, 1); return false; }
+        bool ok = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        return ok;
+    }
+
+    bool ApplyBackdrop(lua_State* L, int32_t ref, const uint8_t* rgba) {
+        int top = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (!lua_istable(L, -1) && !lua_isuserdata(L, -1)) { lua_settop(L, top); return false; }
+        lua_getfield(L, -1, "SetBackdrop");
+        if (!lua_isfunction(L, -1)) { lua_settop(L, top); return false; }
+        lua_pushvalue(L, -2);
+        lua_newtable(L);
+        auto putStr = [&](const char* key, const char* value) {
+            lua_pushstring(L, key);
+            lua_pushstring(L, value);
+            lua_settable(L, -3);
+        };
+        auto putNum = [&](const char* key, double value) {
+            lua_pushstring(L, key);
+            lua_pushnumber(L, value);
+            lua_settable(L, -3);
+        };
+        putStr("bgFile", "Interface\\ChatFrame\\ChatFrameBackground");
+        putStr("edgeFile", "Interface\\Tooltips\\UI-Tooltip-Border");
+        lua_pushstring(L, "tile");
+        lua_pushboolean(L, 1);
+        lua_settable(L, -3);
+        putNum("tileSize", 16);
+        putNum("edgeSize", 12);
+        lua_pushstring(L, "insets");
+        lua_newtable(L);
+        putNum("left", 3);
+        putNum("right", 3);
+        putNum("top", 3);
+        putNum("bottom", 3);
+        lua_settable(L, -3);
+        if (lua_pcall(L, 2, 0, 0) != 0) { lua_settop(L, top); return false; }
+        lua_settop(L, top);
+        auto pushBg = [&](lua_State* S) {
+            lua_pushnumber(S, rgba[0] / 255.0);
+            lua_pushnumber(S, rgba[1] / 255.0);
+            lua_pushnumber(S, rgba[2] / 255.0);
+            lua_pushnumber(S, rgba[3] / 255.0);
+        };
+        if (!CallOn(L, ref, "SetBackdropColor", 4, pushBg)) return false;
+        CallOn(L, ref, "SetBackdropBorderColor", 4, [](lua_State* S) {
+            lua_pushnumber(S, 0);
+            lua_pushnumber(S, 0);
+            lua_pushnumber(S, 0);
+            lua_pushnumber(S, 1);
+        });
+        return true;
+    }
+
+    bool DoUiStyle(lua_State* L, uint64_t handle, int32_t op, const uint8_t* data, uint32_t len) {
+        auto it = m_ui.find(handle);
+        if (it == m_ui.end() || !data) return false;
+        TaintScope taint("ui");
+        TrackState(L);
+        it = m_ui.find(handle);
+        if (it == m_ui.end()) return false;
+        const UiRefs& widget = it->second;
+        auto pushColor = [&](lua_State* S) {
+            lua_pushnumber(S, data[0] / 255.0);
+            lua_pushnumber(S, data[1] / 255.0);
+            lua_pushnumber(S, data[2] / 255.0);
+            lua_pushnumber(S, data[3] / 255.0);
+        };
+        switch ((WasmAddon::UiOp)op) {
+            case WasmAddon::UiOp::SetSize:
+                if (len < 8) return false;
+                return CallOn(L, widget.mainRef, "SetWidth", 1, [&](lua_State* S) { lua_pushnumber(S, ReadI32(data)); })
+                    && CallOn(L, widget.mainRef, "SetHeight", 1, [&](lua_State* S) { lua_pushnumber(S, ReadI32(data + 4)); });
+            case WasmAddon::UiOp::SetPoint: {
+                if (len < 16) return false;
+                static const char* kPoints[] = {"TOPLEFT", "TOP", "TOPRIGHT", "LEFT", "CENTER", "RIGHT", "BOTTOMLEFT", "BOTTOM", "BOTTOMRIGHT"};
+                if (data[0] > 8 || data[1] > 8) return false;
+                int32_t relHost = ReadI32(data + 4);
+                int top = lua_gettop(L);
+                lua_rawgeti(L, LUA_REGISTRYINDEX, widget.mainRef);
+                if (!lua_istable(L, -1) && !lua_isuserdata(L, -1)) { lua_settop(L, top); return false; }
+                int self = lua_gettop(L);
+                if (relHost == 0) {
+                    lua_getfield(L, self, "GetParent");
+                    lua_pushvalue(L, self);
+                    if (lua_pcall(L, 1, 1, 0) != 0 || lua_isnil(L, -1)) {
+                        lua_settop(L, self);
+                        lua_getfield(L, LUA_GLOBALSINDEX, "UIParent");
+                    }
+                } else {
+                    auto rel = m_ui.find((uint64_t)relHost);
+                    if (rel == m_ui.end()) { lua_settop(L, top); return false; }
+                    lua_rawgeti(L, LUA_REGISTRYINDEX, rel->second.mainRef);
+                }
+                int relative = lua_gettop(L);
+                lua_getfield(L, self, "ClearAllPoints");
+                if (lua_isfunction(L, -1)) {
+                    lua_pushvalue(L, self);
+                    lua_pcall(L, 1, 0, 0);
+                } else {
+                    lua_pop(L, 1);
+                }
+                lua_getfield(L, self, "SetPoint");
+                if (!lua_isfunction(L, -1)) { lua_settop(L, top); return false; }
+                lua_pushvalue(L, self);
+                lua_pushstring(L, kPoints[data[0]]);
+                lua_pushvalue(L, relative);
+                lua_pushstring(L, kPoints[data[1]]);
+                lua_pushnumber(L, ReadI32(data + 8));
+                lua_pushnumber(L, ReadI32(data + 12));
+                bool ok = lua_pcall(L, 6, 0, 0) == 0;
+                lua_settop(L, top);
+                return ok;
+            }
+            case WasmAddon::UiOp::SetColor:
+                if (len < 4) return false;
+                if (widget.kind == WidgetKind::StatusBar) return CallOn(L, widget.mainRef, "SetStatusBarColor", 4, pushColor);
+                if (widget.kind == WidgetKind::FontString) return CallOn(L, widget.mainRef, "SetTextColor", 4, pushColor);
+                if (widget.kind == WidgetKind::Texture) return CallOn(L, widget.mainRef, "SetVertexColor", 4, pushColor);
+                return CallOn(L, widget.mainRef, "SetBackdropColor", 4, pushColor);
+            case WasmAddon::UiOp::SetShown:
+                if (len < 1) return false;
+                return CallOn(L, widget.mainRef, data[0] ? "Show" : "Hide", 0, [](lua_State*) {});
+            case WasmAddon::UiOp::SetValue:
+                if (len < 12 || widget.kind != WidgetKind::StatusBar) return false;
+                return CallOn(L, widget.mainRef, "SetMinMaxValues", 2, [&](lua_State* S) {
+                           lua_pushnumber(S, ReadI32(data + 4));
+                           lua_pushnumber(S, ReadI32(data + 8));
+                       })
+                    && CallOn(L, widget.mainRef, "SetValue", 1, [&](lua_State* S) { lua_pushnumber(S, ReadI32(data)); });
+            case WasmAddon::UiOp::SetJustify: {
+                if (len < 2 || widget.kind != WidgetKind::FontString || data[0] > 2 || data[1] > 2) return false;
+                static const char* kH[] = {"LEFT", "CENTER", "RIGHT"};
+                static const char* kV[] = {"TOP", "MIDDLE", "BOTTOM"};
+                return CallOn(L, widget.mainRef, "SetJustifyH", 1, [&](lua_State* S) { lua_pushstring(S, kH[data[0]]); })
+                    && CallOn(L, widget.mainRef, "SetJustifyV", 1, [&](lua_State* S) { lua_pushstring(S, kV[data[1]]); });
+            }
+            case WasmAddon::UiOp::SetFontSize:
+                if (len < 4 || widget.kind != WidgetKind::FontString) return false;
+                return CallOn(L, widget.mainRef, "SetFont", 2, [&](lua_State* S) {
+                    lua_pushstring(S, "Fonts\\FRIZQT__.TTF");
+                    lua_pushnumber(S, ReadI32(data));
+                });
+            case WasmAddon::UiOp::SetBackdrop:
+                if (len < 4 || (widget.kind != WidgetKind::Frame && widget.kind != WidgetKind::Button && widget.kind != WidgetKind::StatusBar)) return false;
+                return ApplyBackdrop(L, widget.mainRef, data);
+            case WasmAddon::UiOp::SetTextColor:
+                if (len < 4 || widget.kind != WidgetKind::FontString) return false;
+                return CallOn(L, widget.mainRef, "SetTextColor", 4, pushColor);
+            case WasmAddon::UiOp::SetLevel:
+                if (len < 4 || widget.kind == WidgetKind::FontString || widget.kind == WidgetKind::Texture) return false;
+                return CallOn(L, widget.mainRef, "SetFrameLevel", 1, [&](lua_State* S) { lua_pushnumber(S, ReadI32(data)); });
+            case WasmAddon::UiOp::SetStrata: {
+                if (len < 1 || data[0] > 7 || widget.kind == WidgetKind::FontString || widget.kind == WidgetKind::Texture) return false;
+                static const char* kStrata[] = {"BACKGROUND", "LOW", "MEDIUM", "HIGH", "DIALOG", "FULLSCREEN", "FULLSCREEN_DIALOG", "TOOLTIP"};
+                return CallOn(L, widget.mainRef, "SetFrameStrata", 1, [&](lua_State* S) { lua_pushstring(S, kStrata[data[0]]); });
+            }
+            case WasmAddon::UiOp::SetAlpha:
+                if (len < 4) return false;
+                return CallOn(L, widget.mainRef, "SetAlpha", 1, [&](lua_State* S) { lua_pushnumber(S, ReadI32(data) / 1000.0); });
+            case WasmAddon::UiOp::SetMouse:
+                if (len < 1) return false;
+                return CallOn(L, widget.mainRef, "EnableMouse", 1, [&](lua_State* S) {
+                    if (data[0]) lua_pushnumber(S, 1);
+                    else lua_pushnil(S);
+                });
+            case WasmAddon::UiOp::SetTexture: {
+                if (widget.kind != WidgetKind::Texture || len < 1) return false;
+                std::string path(reinterpret_cast<const char*>(data), len);
+                return CallOn(L, widget.mainRef, "SetTexture", 1, [&](lua_State* S) { lua_pushlstring(S, path.data(), path.size()); });
+            }
+        }
+        return false;
+    }
+
+    // ʕ •ᴥ•ʔ✿ Curry the signal in a fixed chunk so addon text never becomes Lua source ✿ ʕ •ᴥ•ʔ
+    bool InstallUiSignal(lua_State* L, int32_t ref, const char* scriptName, int32_t guest, const std::string& event) {
+        int top = lua_gettop(L);
+        if (luaL_loadstring(L, "return function(h, ev) return function() WasmAddon_UiSignal(h, ev) end end") != 0) {
+            lua_settop(L, top);
+            return false;
+        }
+        if (lua_pcall(L, 0, 1, 0) != 0) { lua_settop(L, top); return false; }
+        lua_pushnumber(L, (lua_Number)guest);
+        lua_pushlstring(L, event.data(), event.size());
+        if (lua_pcall(L, 2, 1, 0) != 0 || !lua_isfunction(L, -1)) { lua_settop(L, top); return false; }
+        int closure = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (!lua_istable(L, -1) && !lua_isuserdata(L, -1)) { lua_settop(L, top); return false; }
+        int self = lua_gettop(L);
+        lua_getfield(L, self, "SetScript");
+        if (!lua_isfunction(L, -1)) { lua_settop(L, top); return false; }
+        lua_pushvalue(L, self);
+        lua_pushstring(L, scriptName);
+        lua_pushvalue(L, closure);
+        bool ok = lua_pcall(L, 3, 0, 0) == 0;
+        lua_settop(L, top);
+        return ok;
+    }
+
+    bool DoUiBind(lua_State* L, uint64_t handle, int32_t guest, const std::string& event) {
+        auto it = m_ui.find(handle);
+        if (it == m_ui.end()) return false;
+        TaintScope taint("ui");
+        TrackState(L);
+        it = m_ui.find(handle);
+        if (it == m_ui.end()) return false;
+        const char* script = nullptr;
+        bool mouse = false;
+        bool keyboard = false;
+        if (event == "click") { script = "OnClick"; mouse = true; }
+        else if (event == "enter") { script = "OnEnter"; mouse = true; }
+        else if (event == "leave") { script = "OnLeave"; mouse = true; }
+        else if (event == "escape") { script = "OnEscapePressed"; keyboard = true; }
+        else if (event == "enter_pressed") { script = "OnEnterPressed"; keyboard = true; }
+        else if (event == "text_changed") { script = "OnTextChanged"; keyboard = true; }
+        else return false;
+        WidgetKind kind = it->second.kind;
+        bool frameLike = kind == WidgetKind::Frame || kind == WidgetKind::Button || kind == WidgetKind::StatusBar
+            || kind == WidgetKind::EditBox || kind == WidgetKind::ScrollFrame;
+        if (!frameLike) return false;
+        if (keyboard && kind != WidgetKind::EditBox) return false;
+        if (event == "click" && kind != WidgetKind::Button && kind != WidgetKind::Frame && kind != WidgetKind::EditBox
+            && kind != WidgetKind::ScrollFrame && kind != WidgetKind::StatusBar) return false;
+        int32_t ref = it->second.mainRef;
+        if (mouse && !CallOn(L, ref, "EnableMouse", 1, [](lua_State* S) { lua_pushnumber(S, 1); })) return false;
+        if (keyboard) {
+            if (!CallOn(L, ref, "EnableKeyboard", 1, [](lua_State* S) { lua_pushnumber(S, 1); })) return false;
+            if (!CallOn(L, ref, "EnableMouse", 1, [](lua_State* S) { lua_pushnumber(S, 1); })) return false;
+        }
+        return InstallUiSignal(L, ref, script, guest, event);
+    }
+
+    bool DoUiGetText(lua_State* L, uint64_t handle, std::string& out) {
+        auto it = m_ui.find(handle);
+        if (it == m_ui.end()) return false;
+        TaintScope taint("ui");
+        TrackState(L);
+        it = m_ui.find(handle);
+        if (it == m_ui.end()) return false;
+        out.clear();
+        int32_t ref = it->second.textRef != LUA_NOREF ? it->second.textRef : it->second.mainRef;
+        int top = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (lua_istable(L, -1) || lua_isuserdata(L, -1)) {
+            lua_getfield(L, -1, "GetText");
+            if (lua_isfunction(L, -1)) {
+                lua_pushvalue(L, -2);
+                if (lua_pcall(L, 1, 1, 0) == 0 && lua_type(L, -1) == LUA_TSTRING) {
+                    size_t len = 0;
+                    const char* text = lua_tolstring(L, -1, &len);
+                    if (text) out.assign(text, len);
+                }
+            }
+        }
+        lua_settop(L, top);
+        return true;
+    }
+
+    static bool EndsWithFold(const std::string& path, const char* ext) {
+        size_t n = std::strlen(ext);
+        if (path.size() < n) return false;
+        for (size_t i = 0; i < n; i++) {
+            char a = path[path.size() - n + i];
+            char b = ext[i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) return false;
+        }
+        return true;
+    }
+
+    static bool InsideRoot(const std::string& root, const fs::path& file) {
+        fs::path base = fs::path(root).lexically_normal();
+        fs::path norm = file.lexically_normal();
+        std::string baseS = base.string();
+        std::string fileS = norm.string();
+        return fileS.size() > baseS.size() && fileS.compare(0, baseS.size(), baseS) == 0 &&
+            (fileS[baseS.size()] == '/' || fileS[baseS.size()] == '\\');
+    }
+
+    static std::string GameRelative(const fs::path& file) {
+        std::error_code ec;
+        fs::path rel = fs::relative(file, fs::current_path(), ec);
+        if (ec) return {};
+        std::string text = rel.generic_string();
+        for (char& c : text) if (c == '/') c = '\\';
+        return text;
+    }
+
+    int RunLua(const std::string& addonId, const std::string& chunkName, const char* source, size_t length, std::string& error) {
+        lua_State* L = FrameScript_GetContext();
+        if (!L) { error = "lua state unavailable"; return WasmAddon::ErrUnavailable; }
+        if (length > 8u * 1024u * 1024u) { error = "lua source too large"; return WasmAddon::ErrLimitExceeded; }
+        TaintScope taint(addonId);
+        int top = lua_gettop(L);
+        if (luaL_loadbuffer(L, source, length, chunkName.c_str())) {
+            error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "lua load error";
+            lua_settop(L, top);
+            return WasmAddon::ErrGeneric;
+        }
+        if (lua_pcall(L, 0, 0, 0)) {
+            error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "lua runtime error";
+            lua_settop(L, top);
+            return WasmAddon::ErrGeneric;
+        }
+        lua_settop(L, top);
+        return WasmAddon::Ok;
+    }
+
+    static uint16_t ReadU16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+    static uint32_t ReadU32(const uint8_t* p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+    static void WriteU16(std::vector<uint8_t>& out, uint16_t v) { out.push_back((uint8_t)v); out.push_back((uint8_t)(v >> 8)); }
+    static void WriteU32(std::vector<uint8_t>& out, uint32_t v) { for (int i = 0; i < 4; i++) out.push_back((uint8_t)(v >> (8 * i))); }
+
+    static bool LuaNameOk(const std::string& name) {
+        if (name.empty() || name.size() > 128) return false;
+        for (size_t i = 0; i < name.size(); i++) {
+            char c = name[i];
+            bool ident = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || (i > 0 && c >= '0' && c <= '9');
+            if (!ident) return false;
+        }
+        return true;
+    }
+
+    int LuaRef(const std::string& addonId, int32_t handle) const {
+        auto addon = m_luaRefs.find(addonId);
+        if (addon == m_luaRefs.end()) return LUA_NOREF;
+        auto it = addon->second.find(handle);
+        return it == addon->second.end() ? LUA_NOREF : it->second;
+    }
+
+    int32_t InternLua(const std::string& addonId, lua_State* L, int idx) {
+        int32_t& next = m_nextLua[addonId];
+        if (next <= 0) next = 1;
+        if (next > 4096) return 0;
+        lua_pushvalue(L, idx);
+        int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        int32_t id = next++;
+        m_luaRefs[addonId][id] = ref;
+        return id;
+    }
+
+    bool PushLuaVal(lua_State* L, const uint8_t*& p, const uint8_t* end, int depth, const std::string& addonId) {
+        if (p >= end || depth > 3) return false;
+        uint8_t tag = *p++;
+        switch (tag) {
+            case 0: lua_pushnil(L); return true;
+            case 1:
+                if (p >= end) return false;
+                lua_pushboolean(L, *p++ ? 1 : 0);
+                return true;
+            case 2: {
+                if (p + 8 > end) return false;
+                double value = 0;
+                std::memcpy(&value, p, 8);
+                p += 8;
+                lua_pushnumber(L, value);
+                return true;
+            }
+            case 3: {
+                if (p + 4 > end) return false;
+                uint32_t n = ReadU32(p);
+                p += 4;
+                if (n > 4096 || p + n > end) return false;
+                lua_pushlstring(L, reinterpret_cast<const char*>(p), n);
+                p += n;
+                return true;
+            }
+            case 4: {
+                if (p + 4 > end) return false;
+                int32_t handle = (int32_t)ReadU32(p);
+                p += 4;
+                int ref = LuaRef(addonId, handle);
+                if (ref == LUA_NOREF) return false;
+                lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+                return true;
+            }
+            case 5: {
+                if (p + 2 > end) return false;
+                uint16_t fields = ReadU16(p);
+                p += 2;
+                if (fields > 32) return false;
+                lua_newtable(L);
+                int table = lua_gettop(L);
+                for (uint16_t i = 0; i < fields; i++) {
+                    if (p + 2 > end) return false;
+                    uint16_t keyLen = ReadU16(p);
+                    p += 2;
+                    if (keyLen == 0 || keyLen > 64 || p + keyLen > end) return false;
+                    lua_pushlstring(L, reinterpret_cast<const char*>(p), keyLen);
+                    p += keyLen;
+                    if (!PushLuaVal(L, p, end, depth + 1, addonId)) return false;
+                    lua_settable(L, table);
+                }
+                return true;
+            }
+            default: return false;
+        }
+    }
+
+    bool WriteLuaVal(std::vector<uint8_t>& out, lua_State* L, int idx, const std::string& addonId) {
+        switch (lua_type(L, idx)) {
+            case LUA_TBOOLEAN:
+                out.push_back(1);
+                out.push_back((uint8_t)(lua_toboolean(L, idx) ? 1 : 0));
+                return true;
+            case LUA_TNUMBER: {
+                out.push_back(2);
+                double value = lua_tonumber(L, idx);
+                const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+                out.insert(out.end(), bytes, bytes + 8);
+                return true;
+            }
+            case LUA_TSTRING: {
+                size_t len = 0;
+                const char* text = lua_tolstring(L, idx, &len);
+                if (len > 4096) len = 4096;
+                out.push_back(3);
+                WriteU32(out, (uint32_t)len);
+                out.insert(out.end(), text, text + len);
+                return true;
+            }
+            case LUA_TTABLE:
+            case LUA_TUSERDATA:
+            case LUA_TFUNCTION: {
+                int32_t handle = InternLua(addonId, L, idx);
+                if (handle <= 0) return false;
+                out.push_back(4);
+                WriteU32(out, (uint32_t)handle);
+                return true;
+            }
+            default:
+                out.push_back(0);
+                return true;
+        }
+    }
+
+    bool PushAwesomeArg(lua_State* L, const uint8_t*& p, const uint8_t* end) {
+        if (p >= end) return false;
+        uint8_t tag = *p++;
+        switch (tag) {
+            case 0: lua_pushnil(L); return true;
+            case 1:
+                if (p >= end) return false;
+                lua_pushboolean(L, *p++ != 0);
+                return true;
+            case 2: {
+                if (p + 8 > end) return false;
+                double number = 0;
+                memcpy(&number, p, 8);
+                p += 8;
+                lua_pushnumber(L, number);
+                return true;
+            }
+            case 3: {
+                if (p + 4 > end) return false;
+                uint32_t n = ReadU32(p);
+                p += 4;
+                if (n > 8192 || p + n > end) return false;
+                lua_pushlstring(L, reinterpret_cast<const char*>(p), n);
+                p += n;
+                return true;
+            }
+            default: return false;
+        }
+    }
+
+    bool ResolveAwesome(lua_State* L, const std::string& name) {
+        size_t dot = name.find('.');
+        if (dot == std::string::npos) {
+            lua_getfield(L, LUA_GLOBALSINDEX, name.c_str());
+            return lua_isfunction(L, -1);
+        }
+        if (name.find('.', dot + 1) != std::string::npos) return false;
+        lua_getfield(L, LUA_GLOBALSINDEX, name.substr(0, dot).c_str());
+        if (!lua_istable(L, -1)) return false;
+        lua_getfield(L, -1, name.substr(dot + 1).c_str());
+        lua_remove(L, -2);
+        return lua_isfunction(L, -1);
+    }
+
+    bool WriteAwesomeVal(std::vector<uint8_t>& bytes, lua_State* L, int idx, int depth) {
+        if (idx < 0) idx = lua_gettop(L) + idx + 1;
+        if (depth > 4 || bytes.size() > 16384) return false;
+        switch (lua_type(L, idx)) {
+            case LUA_TNIL: bytes.push_back(0); return true;
+            case LUA_TBOOLEAN:
+                bytes.push_back(1);
+                bytes.push_back(lua_toboolean(L, idx) ? 1 : 0);
+                return true;
+            case LUA_TNUMBER: {
+                bytes.push_back(2);
+                double number = lua_tonumber(L, idx);
+                uint8_t raw[8];
+                memcpy(raw, &number, 8);
+                bytes.insert(bytes.end(), raw, raw + 8);
+                return true;
+            }
+            case LUA_TSTRING: {
+                size_t len = 0;
+                const char* text = lua_tolstring(L, idx, &len);
+                if (!text || len > 4096) return false;
+                bytes.push_back(3);
+                WriteU32(bytes, (uint32_t)len);
+                bytes.insert(bytes.end(), text, text + len);
+                return true;
+            }
+            case LUA_TTABLE: {
+                lua_pushnumber(L, 0);
+                lua_rawget(L, idx);
+                if (lua_islightuserdata(L, -1)) {
+                    const char* token = AwesomeWotlkTokenForPointer(lua_touserdata(L, -1));
+                    lua_pop(L, 1);
+                    if (token) {
+                        size_t len = strlen(token);
+                        bytes.push_back(3);
+                        WriteU32(bytes, (uint32_t)len);
+                        bytes.insert(bytes.end(), token, token + len);
+                        return true;
+                    }
+                } else {
+                    lua_pop(L, 1);
+                }
+                int count = 0;
+                lua_pushnil(L);
+                while (lua_next(L, idx)) {
+                    int keyType = lua_type(L, -2);
+                    if (keyType == LUA_TSTRING || (keyType == LUA_TNUMBER && lua_tonumber(L, -2) != 0.0 && lua_tonumber(L, -2) == (double)(int)lua_tonumber(L, -2))) count++;
+                    lua_pop(L, 1);
+                    if (count > 80) { lua_pop(L, 1); return false; }
+                }
+                bytes.push_back(5);
+                WriteU16(bytes, (uint16_t)count);
+                int written = 0;
+                lua_pushnil(L);
+                while (lua_next(L, idx)) {
+                    char keybuf[64];
+                    const char* key = nullptr;
+                    size_t keyLen = 0;
+                    if (lua_type(L, -2) == LUA_TSTRING) key = lua_tolstring(L, -2, &keyLen);
+                    else if (lua_type(L, -2) == LUA_TNUMBER) {
+                        double k = lua_tonumber(L, -2);
+                        if (k != 0.0 && k == (double)(int)k) {
+                            snprintf(keybuf, sizeof(keybuf), "%d", (int)k);
+                            key = keybuf;
+                            keyLen = strlen(keybuf);
+                        }
+                    }
+                    bool ok = true;
+                    if (key && keyLen > 0 && keyLen < 64) {
+                        WriteU16(bytes, (uint16_t)keyLen);
+                        bytes.insert(bytes.end(), key, key + keyLen);
+                        ok = WriteAwesomeVal(bytes, L, -1, depth + 1);
+                        if (ok) written++;
+                    }
+                    lua_pop(L, 1);
+                    if (!ok) return false;
+                }
+                return written == count;
+            }
+            default: bytes.push_back(0); return true;
+        }
+    }
+
+    int DoAwesomeCall(const std::string& addonId, const uint8_t* req, uint32_t reqLen, std::vector<uint8_t>& out, std::string& error) {
+        if (!req || reqLen < 2) { error = "short awesome call"; return WasmAddon::ErrInvalidArgument; }
+        const uint8_t* p = req;
+        const uint8_t* end = req + reqLen;
+        uint16_t nameLen = ReadU16(p);
+        p += 2;
+        if (!nameLen || nameLen > 128 || p + nameLen > end) return WasmAddon::ErrInvalidArgument;
+        std::string name(reinterpret_cast<const char*>(p), nameLen);
+        p += nameLen;
+        if (!AwesomeWotlkIsCall(name.c_str())) { error = "unknown awesome call"; return WasmAddon::ErrNotFound; }
+        lua_State* L = FrameScript_GetContext();
+        if (!L) { error = "lua state unavailable"; return WasmAddon::ErrUnavailable; }
+        TaintScope taint(addonId);
+        int saved = lua_gettop(L);
+        if (!ResolveAwesome(L, name)) { error = "missing " + name; lua_settop(L, saved); return WasmAddon::ErrNotFound; }
+        int nargs = 0;
+        while (p < end) {
+            if (nargs >= 8) { error = "too many args"; lua_settop(L, saved); return WasmAddon::ErrLimitExceeded; }
+            if (!PushAwesomeArg(L, p, end)) { error = "bad argument"; lua_settop(L, saved); return WasmAddon::ErrInvalidArgument; }
+            nargs++;
+        }
+        if (name == "GetCVar" || name == "SetCVar") {
+            if (nargs < 1 || lua_type(L, saved + 2) != LUA_TSTRING || !AwesomeWotlkIsCVar(lua_tostring(L, saved + 2))) {
+                error = "cvar";
+                lua_settop(L, saved);
+                return WasmAddon::ErrNotFound;
+            }
+        }
+        if (lua_pcall(L, nargs, 8, 0)) {
+            error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "lua error";
+            lua_settop(L, saved);
+            return WasmAddon::ErrGeneric;
+        }
+        int nret = lua_gettop(L) - saved;
+        if (nret < 0) nret = 0;
+        if (nret > 8) nret = 8;
+        std::vector<uint8_t> bytes;
+        WriteU16(bytes, (uint16_t)nret);
+        for (int i = 1; i <= nret; i++) {
+            if (!WriteAwesomeVal(bytes, L, saved + i, 0)) { error = "awesome result"; lua_settop(L, saved); return WasmAddon::ErrLimitExceeded; }
+        }
+        lua_settop(L, saved);
+        out.swap(bytes);
+        return WasmAddon::Ok;
+    }
+
+    int DoCallLua(const std::string& addonId, const uint8_t* req, uint32_t reqLen, std::vector<uint8_t>& out, std::string& error) {
+        if (!req || reqLen < 7) { error = "short lua call"; return WasmAddon::ErrInvalidArgument; }
+        const uint8_t* p = req;
+        const uint8_t* end = req + reqLen;
+        uint8_t op = *p++;
+        if (p + 4 > end) return WasmAddon::ErrInvalidArgument;
+        int32_t obj = (int32_t)ReadU32(p);
+        p += 4;
+        if (p + 2 > end) return WasmAddon::ErrInvalidArgument;
+        uint16_t nameLen = ReadU16(p);
+        p += 2;
+        if (nameLen == 0 || nameLen > 128 || p + nameLen > end) return WasmAddon::ErrInvalidArgument;
+        std::string name(reinterpret_cast<const char*>(p), nameLen);
+        p += nameLen;
+        if (!LuaNameOk(name)) { error = "bad lua name"; return WasmAddon::ErrInvalidArgument; }
+        lua_State* L = FrameScript_GetContext();
+        if (!L) { error = "lua state unavailable"; return WasmAddon::ErrUnavailable; }
+        TaintScope taint(addonId);
+        int saved = lua_gettop(L);
+        int nargs = 0;
+        if (op == 2) {
+            lua_getfield(L, LUA_GLOBALSINDEX, name.c_str());
+        } else if (op == 0) {
+            lua_getfield(L, LUA_GLOBALSINDEX, name.c_str());
+            if (!lua_isfunction(L, -1)) { error = "nil function " + name; lua_settop(L, saved); return WasmAddon::ErrNotFound; }
+        } else if (op == 1) {
+            int ref = LuaRef(addonId, obj);
+            if (ref == LUA_NOREF) { error = "bad object"; lua_settop(L, saved); return WasmAddon::ErrInvalidHandle; }
+            lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+            lua_getfield(L, -1, name.c_str());
+            if (!lua_isfunction(L, -1)) { error = "nil method " + name; lua_settop(L, saved); return WasmAddon::ErrNotFound; }
+            lua_pushvalue(L, -2);
+            lua_remove(L, -3);
+            nargs = 1;
+        } else {
+            error = "bad lua op";
+            return WasmAddon::ErrInvalidArgument;
+        }
+        if (op != 2) {
+            int args = 0;
+            while (p < end) {
+                if (args >= 16) { error = "too many args"; lua_settop(L, saved); return WasmAddon::ErrLimitExceeded; }
+                if (!PushLuaVal(L, p, end, 0, addonId)) { error = "bad lua argument"; lua_settop(L, saved); return WasmAddon::ErrInvalidArgument; }
+                nargs++;
+                args++;
+            }
+            if (lua_pcall(L, nargs, 8, 0)) {
+                error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "lua error";
+                lua_settop(L, saved);
+                return WasmAddon::ErrGeneric;
+            }
+        }
+        int nret = lua_gettop(L) - saved;
+        if (nret < 0) nret = 0;
+        if (nret > 8) nret = 8;
+        std::vector<uint8_t> bytes;
+        WriteU16(bytes, (uint16_t)nret);
+        for (int i = 1; i <= nret; i++) {
+            if (!WriteLuaVal(bytes, L, saved + i, addonId)) { error = "too many lua objects"; lua_settop(L, saved); return WasmAddon::ErrLimitExceeded; }
+        }
+        lua_settop(L, saved);
+        out.swap(bytes);
+        return WasmAddon::Ok;
+    }
+
+    int LoadLuaFile(const std::string& addonId, const std::string& addonRoot, const std::string& absolutePath, std::string& error, std::set<std::string>& seen, int depth) {
+        if (depth > 8) { error = "toc include depth exceeded"; return WasmAddon::ErrLimitExceeded; }
+        fs::path file = fs::path(absolutePath).lexically_normal();
+        if (!InsideRoot(addonRoot, file)) { error = "path escapes addon"; return WasmAddon::ErrInvalidArgument; }
+        std::string key = file.string();
+        if (!seen.insert(key).second) return WasmAddon::Ok;
+        std::error_code ec;
+        if (!fs::is_regular_file(file, ec)) { error = "missing file " + key; return WasmAddon::ErrNotFound; }
+        if (EndsWithFold(key, ".toc")) {
+            std::ifstream in(file);
+            if (!in) { error = "couldn't open toc"; return WasmAddon::ErrNotFound; }
+            std::string line;
+            while (std::getline(in, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                size_t start = line.find_first_not_of(" \t");
+                if (start == std::string::npos || line[start] == '#') continue;
+                size_t end = line.find_last_not_of(" \t");
+                std::string name = line.substr(start, end - start + 1);
+                fs::path child = (file.parent_path() / name).lexically_normal();
+                int rc = LoadLuaFile(addonId, addonRoot, child.string(), error, seen, depth + 1);
+                if (rc != WasmAddon::Ok) return rc;
+            }
+            return WasmAddon::Ok;
+        }
+        if (EndsWithFold(key, ".xml")) {
+            std::string rel = GameRelative(file);
+            if (rel.empty()) { error = "xml must live under the client directory: " + key; return WasmAddon::ErrUnavailable; }
+            TaintScope taint(addonId);
+            CStatus status;
+            if (!FrameXML_ProcessFileNoHash(rel.c_str(), addonId.c_str(), &status)) {
+                error = "xml failed: " + rel;
+                return WasmAddon::ErrGeneric;
+            }
+            return WasmAddon::Ok;
+        }
+        std::ifstream in(file, std::ios::binary);
+        if (!in) { error = "couldn't open " + key; return WasmAddon::ErrNotFound; }
+        std::string source((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        return RunLua(addonId, "@" + key, source.data(), source.size(), error);
+    }
+
+    bool DoUiSetText(lua_State* L, uint64_t handle, const std::string& text) {
+        auto it = m_ui.find(handle);
+        if (it == m_ui.end()) return false;
+        TaintScope taint("ui");
+        TrackState(L);
+        it = m_ui.find(handle);
+        if (it == m_ui.end() || it->second.textRef == LUA_NOREF) return false;
+        int top = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.textRef);
+        if (!lua_istable(L, -1) && !lua_isuserdata(L, -1)) { lua_settop(L, top); return false; }
+        lua_getfield(L, -1, "SetText");
+        lua_pushvalue(L, -2);
+        lua_pushstring(L, text.c_str());
+        bool ok = lua_pcall(L, 2, 0, 0) == 0;
+        lua_settop(L, top);
+        return ok;
+    }
+
+    // ʕ •ᴥ•ʔ✿ Registry refs belong to one lua_State; a new state orphans them without luaL_unref ✿ ʕ •ᴥ•ʔ
+    void TrackState(lua_State* L) {
+        if (m_seenState && L != m_seenState) m_ui.clear();
+        m_seenState = L;
+    }
+    enum class WidgetKind : uint8_t { Frame, FontString, Texture, StatusBar, Button, EditBox, ScrollFrame, Canvas, Model, Surface };
+    struct UiRefs {
+        int32_t mainRef = LUA_NOREF;
+        int32_t textRef = LUA_NOREF;
+        WidgetKind kind = WidgetKind::Frame;
+        int32_t surfaceId = 0;
+        CSimpleTexture* canvas = nullptr;
+        CTexture* canvasImage = nullptr;
+        std::vector<uint8_t> pixels;
+        int32_t canvasW = 0;
+        int32_t canvasH = 0;
+    };
+    lua_State* m_seenState = nullptr;
+    std::map<uint64_t, UiRefs> m_ui;
+    std::map<std::string, std::map<int32_t, int>> m_luaRefs;
+    std::map<std::string, int32_t> m_nextLua;
+    uint64_t m_nextHandle = 1;
+
+    static int32_t MakeFontString(lua_State* L) {
+        // ʕ ◕ᴥ◕ ʔ✿ Parent is on top of the stack; returns a registry ref to the new FontString ✿ ʕ ◕ᴥ◕ ʔ
+        int32_t parent = lua_gettop(L);
+        lua_getfield(L, parent, "CreateFontString");
+        lua_pushvalue(L, parent);
+        lua_pushnil(L);
+        lua_pushstring(L, "OVERLAY");
+        lua_pushstring(L, "GameFontNormal");
+        if (lua_pcall(L, 4, 1, 0) != 0) return LUA_NOREF;
+        lua_getfield(L, -1, "SetPoint");
+        lua_pushvalue(L, -2);
+        lua_pushstring(L, "CENTER");
+        lua_pcall(L, 2, 0, 0);
+        return luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    static int32_t CallInt(lua_State* L, const char* fn, int32_t a) {
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, fn);
+        lua_pushnumber(L, a);
+        double v = lua_pcall(L, 1, 1, 0) == 0 ? lua_tonumber(L, -1) : 0;
+        int32_t result = v >= 0 && v <= 10000000 ? (int32_t)v : 0;
+        lua_settop(L, top);
+        return result;
+    }
+    static int32_t CallInt2(lua_State* L, const char* fn, int32_t a, int32_t b) {
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, fn);
+        lua_pushnumber(L, a);
+        lua_pushnumber(L, b);
+        double v = lua_pcall(L, 2, 1, 0) == 0 ? lua_tonumber(L, -1) : 0;
+        int32_t result = v >= 0 && v <= 10000000 ? (int32_t)v : 0;
+        lua_settop(L, top);
+        return result;
+    }
+    static int32_t CallSecondInt(lua_State* L, const char* fn, int32_t a, int32_t b) {
+        int top = lua_gettop(L);
+        lua_getfield(L, LUA_GLOBALSINDEX, fn);
+        lua_pushnumber(L, a);
+        lua_pushnumber(L, b);
+        int32_t result = 0;
+        if (lua_pcall(L, 2, LUA_MULTRET, 0) == 0 && lua_gettop(L) >= top + 2)
+            result = (int32_t)lua_tonumber(L, top + 2);
+        lua_settop(L, top);
+        return result;
+    }
+};
+
+ClientHostServices s_host;
+WasmAddon::WasmAddonManager s_manager;
+bool s_initialized = false;
+
+void ClientHostServices::ConfirmShow(const WasmAddon::ConfirmRequest& request) {
+    std::string name = "addon";
+    auto addons = s_manager.GetInspector();
+    if (request.addonIndex < addons.size()) name = WasmAddon::SanitizeDisplayText(addons[request.addonIndex].manifest.name);
+    WasmConfirmUi_Show(request, WasmAddon::ComposeConfirmText(request, name));
+}
+
+void ClientHostServices::ConfirmHide(uint32_t requestId) {
+    WasmConfirmUi_Hide(requestId);
+}
+
+void OnGameEvent(uint32_t, const char* eventName, lua_State* L, int32_t argCount) {
+    if (!L || !s_manager.HasSubscriber(eventName)) return;
+    WasmAddon::EventPayloadWriter writer(eventName, 0);
+    int32_t top = lua_gettop(L);
+    // ʕ ◕ᴥ◕ ʔ✿ Stack: [name, args...]; lua_tolstring is only called on values already of type string ✿ ʕ ◕ᴥ◕ ʔ
+    for (int32_t i = 1; i < argCount && i <= (int32_t)WasmAddon::kMaxEventArgs; i++) {
+        int32_t idx = top - argCount + 1 + i;
+        switch (lua_type(L, idx)) {
+            case LUA_TBOOLEAN: writer.Bool(lua_toboolean(L, idx) != 0); break;
+            case LUA_TNUMBER: writer.Number(lua_tonumber(L, idx)); break;
+            case LUA_TSTRING: {
+                size_t len = 0;
+                const char* text = lua_tolstring(L, idx, &len);
+                writer.String(text ? text : "", text ? len : 0);
+                break;
+            }
+            case LUA_TTABLE: {
+                lua_pushnumber(L, 0);
+                lua_rawget(L, idx);
+                const char* token = lua_islightuserdata(L, -1) ? AwesomeWotlkTokenForPointer(lua_touserdata(L, -1)) : nullptr;
+                lua_pop(L, 1);
+                if (token) writer.String(token, strlen(token));
+                else writer.Nil();
+                break;
+            }
+            default: writer.Nil(); break;
+        }
+    }
+    s_manager.DispatchEvent(eventName, writer.Finish());
+}
+
+bool OnEventInterest(uint32_t index) {
+    if (index >= NUM_SCRIPT_EVENTS) return false;
+    const char* name = g_scriptEvents[index];
+    return name && s_manager.HasSubscriber(name);
+}
+
+int32_t Script_WasmAddonHookFire(lua_State* L) {
+    size_t len = 0;
+    const char* name = lua_tolstring(L, 1, &len);
+    if (!name || !len) return 0;
+    WasmAddon::EventPayloadWriter writer("WASM_HOOK", 0);
+    writer.String(name, len);
+    s_manager.DispatchEvent("WASM_HOOK", writer.Finish());
+    return 0;
+}
+
+int32_t Script_WasmAddonUiSignal(lua_State* L) {
+    if (lua_type(L, 1) != LUA_TNUMBER || lua_type(L, 2) != LUA_TSTRING) return 0;
+    size_t len = 0;
+    const char* event = lua_tolstring(L, 2, &len);
+    WasmAddon::EventPayloadWriter writer("WASM_UI", 0);
+    writer.String(event ? event : "", event ? len : 0);
+    writer.Number(lua_tonumber(L, 1));
+    s_manager.DispatchEvent("WASM_UI", writer.Finish());
+    return 0;
+}
+
+int32_t Script_WasmAddonInspector(lua_State* L) {
+    std::string text = s_manager.FormatInspectorText();
+    lua_pushstring(L, text.c_str());
+    return 1;
+}
+
+int32_t Script_WasmAddonGetNumAddOns(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)s_manager.GetInspector().size());
+    return 1;
+}
+
+// ʕ ◕ᴥ◕ ʔ✿ Multi-return, mirroring Script_GetAddOnInfo; read-only so tainted panels may poll it freely ✿ ʕ ◕ᴥ◕ ʔ
+// ʕ ◕ᴥ◕ ʔ✿ Return order (stable ABI): id, name, version, state, sha256, signaturePresent, memoryBytes, fuelUsed, hostCalls, eventsReceived, traps, denials, uiHandles, lastError, storageAccountBytes, storageCharacterBytes, storageKeyCount ✿ ʕ ◕ᴥ◕ ʔ
+int32_t Script_WasmAddonGetAddOnInfo(lua_State* L) {
+    auto addons = s_manager.GetInspector();
+    int32_t index = 0;
+    if (lua_isnumber(L, 1)) {
+        index = (int32_t)lua_tonumber(L, 1);
+    } else if (lua_isstring(L, 1)) {
+        const char* id = lua_tostring(L, 1);
+        for (size_t i = 0; i < addons.size(); i++)
+            if (addons[i].manifest.id == id) index = (int32_t)i + 1;
+    } else {
+        return luaL_error(L, "Usage: WasmAddon_GetAddOnInfo(index or addon id)");
+    }
+    if (index < 1 || (size_t)index > addons.size())
+        return luaL_error(L, "AddOn index must be in the range of 1 to %d", (int)addons.size());
+    const WasmAddon::InspectorInfo& info = addons[index - 1];
+    lua_pushstring(L, info.manifest.id.c_str());
+    lua_pushstring(L, WasmAddon::SanitizeDisplayText(info.manifest.name).c_str());
+    lua_pushstring(L, WasmAddon::SanitizeDisplayText(info.manifest.version).c_str());
+    lua_pushstring(L, WasmAddon::ToString(info.state));
+    if (info.sha256.empty()) lua_pushnil(L); else lua_pushstring(L, info.sha256.c_str());
+    lua_pushboolean(L, info.signaturePresent);
+    lua_pushnumber(L, (lua_Number)info.stats.memoryBytes);
+    lua_pushnumber(L, (lua_Number)info.stats.fuelUsed);
+    lua_pushnumber(L, (lua_Number)info.stats.hostCalls);
+    lua_pushnumber(L, (lua_Number)info.stats.eventsReceived);
+    lua_pushnumber(L, (lua_Number)info.stats.traps);
+    lua_pushnumber(L, (lua_Number)info.stats.denials);
+    lua_pushnumber(L, (lua_Number)info.activeUiHandles);
+    if (info.lastError.empty()) lua_pushnil(L); else lua_pushstring(L, WasmAddon::SanitizeDisplayText(info.lastError).c_str());
+    lua_pushnumber(L, (lua_Number)info.storageBytes[0]);
+    lua_pushnumber(L, (lua_Number)info.storageBytes[1]);
+    lua_pushnumber(L, (lua_Number)info.storageKeys[0] + (lua_Number)info.storageKeys[1]);
+    return 17;
+}
+
+int32_t SetPermissionFromConsole(const char* arguments, bool granted) {
+    if (lua_tainted) {
+        ConsoleWrite("wasm permission changes are only available from the developer console", ERROR_COLOR);
+        return 1;
+    }
+    char id[128] = {};
+    char permName[64] = {};
+    if (!arguments || sscanf(arguments, "%127s %63s", id, permName) != 2) {
+        ConsoleWrite(granted ? "usage: wasmgrant <addon-id> <permission>" : "usage: wasmdeny <addon-id> <permission>", DEFAULT_COLOR);
+        return 0;
+    }
+    WasmAddon::Permission perm;
+    if (!WasmAddon::PermissionFromName(permName, perm)) {
+        ConsoleWrite("unknown permission", DEFAULT_COLOR);
+        return 0;
+    }
+    for (auto& info : s_manager.GetInspector()) {
+        if (info.manifest.id != id) continue;
+        if (!(info.manifest.declaredPermissions & perm)) {
+            ConsoleWrite("permission not declared by this addon", DEFAULT_COLOR);
+            return 0;
+        }
+        s_manager.SetPermissionOverride(id, perm, granted);
+        ConsoleWrite(granted ? "permission granted" : "permission revoked", DEFAULT_COLOR);
+        return 1;
+    }
+    ConsoleWrite("unknown wasm addon id", DEFAULT_COLOR);
+    return 0;
+}
+
+int32_t CCommand_WasmGrant(const char*, const char* arguments) { return SetPermissionFromConsole(arguments, true); }
+int32_t CCommand_WasmDeny(const char*, const char* arguments) { return SetPermissionFromConsole(arguments, false); }
+int32_t CCommand_WasmStorage(const char*, const char* arguments) {
+    if (lua_tainted) { ConsoleWrite("wasm storage changes are only available from the developer console", ERROR_COLOR); return 1; }
+    char id[128] = {};
+    char action[32] = {};
+    if (!arguments || sscanf(arguments, "%127s %31s", id, action) < 1) {
+        ConsoleWrite("usage: wasmstorage <addon-id> [keys|clear]", ERROR_COLOR);
+        return 0;
+    }
+    for (auto& info : s_manager.GetInspector()) {
+        if (info.manifest.id != id) continue;
+        if (std::string(action) == "clear") {
+            s_manager.ClearStorage(id, 0);
+            s_manager.ClearStorage(id, 1);
+            ConsoleWrite("wasm storage cleared", DEFAULT_COLOR);
+        } else {
+            char line[256];
+            snprintf(line, sizeof(line), "%s storage: account %lluB/%u keys, character %lluB/%u keys", id,
+                     (unsigned long long)info.storageBytes[0], info.storageKeys[0],
+                     (unsigned long long)info.storageBytes[1], info.storageKeys[1]);
+            ConsoleWrite(line, DEFAULT_COLOR);
+        }
+        return 1;
+    }
+    ConsoleWrite("unknown wasm addon id", ERROR_COLOR);
+    return 0;
+}
+
+int32_t CCommand_WasmConfirm(const char*, const char* arguments) {
+    if (lua_tainted) {
+        ConsoleWrite("wasm confirm is only available from the developer console", ERROR_COLOR);
+        return 1;
+    }
+    unsigned id = 0;
+    char action[16] = {};
+    if (!arguments || sscanf(arguments, "%u %15s", &id, action) != 2) {
+        ConsoleWrite("usage: wasmconfirm <id> accept|deny", DEFAULT_COLOR);
+        return 0;
+    }
+    bool accept = std::string(action) == "accept";
+    if (!accept && std::string(action) != "deny") {
+        ConsoleWrite("usage: wasmconfirm <id> accept|deny", DEFAULT_COLOR);
+        return 0;
+    }
+    if (!s_manager.ResolveConfirm(id, accept)) {
+        ConsoleWrite("no matching wasm confirm request", DEFAULT_COLOR);
+        return 0;
+    }
+    ConsoleWrite(accept ? "wasm confirm accepted" : "wasm confirm denied", DEFAULT_COLOR);
+    return 1;
+}
+
+int32_t CCommand_WasmAddons(const char*, const char*) {
+    std::string text = s_manager.FormatInspectorText();
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t eol = text.find('\n', pos);
+        ConsoleWrite(text.substr(pos, eol == std::string::npos ? eol : eol - pos).c_str(), DEFAULT_COLOR);
+        if (eol == std::string::npos) break;
+        pos = eol + 1;
+    }
+    return 1;
+}
+
+} // namespace
+
+void WasmAddonClient_ServiceConfirms() {
+    if (!s_initialized) return;
+    uint64_t now = OsGetAsyncTimeMs();
+    WasmConfirmUi_Tick(now);
+    s_manager.TickConfirm();
+    s_manager.TickUi(now);
+    WasmConfirmUiResult result;
+    if (WasmConfirmUi_Poll(result)) s_manager.ResolveConfirm(result.id, result.accepted);
+}
+
+void WasmAddonClient_OnScriptReset() {
+    if (!s_initialized) return;
+    s_host.DropUiReferences();
+    s_manager.InvalidateUiHandles();
+    WasmAddonClient_RegisterScripts();
+}
+
+void WasmAddonClient_Initialize() {
+    if (s_initialized) return;
+    std::string root = std::filesystem::exists("Interface/WasmAddOns") ? "Interface/WasmAddOns" : "WasmAddOns";
+    s_manager.Initialize(root, &s_host, "WTF/wasm-permissions.cfg");
+    FrameScript_SetEventObserver(OnGameEvent, OnEventInterest);
+    ConsoleCommandRegister("wasmgrant", CCommand_WasmGrant, CATEGORY_DEBUG, "wasmgrant <addon-id> <permission>");
+    ConsoleCommandRegister("wasmdeny", CCommand_WasmDeny, CATEGORY_DEBUG, "wasmdeny <addon-id> <permission>");
+    ConsoleCommandRegister("wasmaddons", CCommand_WasmAddons, CATEGORY_DEBUG, "list WASM addons");
+    ConsoleCommandRegister("wasmstorage", CCommand_WasmStorage, CATEGORY_DEBUG, "wasmstorage <addon-id> [keys|clear]");
+    ConsoleCommandRegister("wasmconfirm", CCommand_WasmConfirm, CATEGORY_DEBUG, "wasmconfirm <id> accept|deny");
+    s_initialized = true;
+}
+
+// ʕ ◕ᴥ◕ ʔ✿ Lua states are rebuilt at glue/game transitions, so registration follows Load/UnloadScriptFunctions ✿ ʕ ◕ᴥ◕ ʔ
+void WasmAddonClient_RegisterScripts() {
+    if (!s_initialized) return;
+    FrameScript_RegisterFunction("WasmAddonInspectorText", Script_WasmAddonInspector);
+    FrameScript_RegisterFunction("WasmAddon_GetNumAddOns", Script_WasmAddonGetNumAddOns);
+    FrameScript_RegisterFunction("WasmAddon_GetAddOnInfo", Script_WasmAddonGetAddOnInfo);
+    FrameScript_RegisterFunction("WasmAddon_UiSignal", Script_WasmAddonUiSignal);
+    FrameScript_RegisterFunction("WasmAddon_HookFire", Script_WasmAddonHookFire);
+    WaylandFrame_Register(FrameScript_GetContext());
+}
+void WasmAddonClient_UnregisterScripts() {
+    if (!s_initialized) return;
+    FrameScript_UnregisterFunction("WasmAddonInspectorText");
+    FrameScript_UnregisterFunction("WasmAddon_GetNumAddOns");
+    FrameScript_UnregisterFunction("WasmAddon_GetAddOnInfo");
+    FrameScript_UnregisterFunction("WasmAddon_UiSignal");
+    FrameScript_UnregisterFunction("WasmAddon_HookFire");
+}
+
+// ʕ •ᴥ•ʔ✿ Loading mirrors LoadAddOns: UI/chat/inventory services only exist once the game UI is up ✿ ʕ •ᴥ•ʔ
+void WasmAddonClient_LoadWorldAddOns() {
+    if (!s_initialized) return;
+    // ʕ •ᴥ•ʔ✿ Storage lives under WTF account/character dirs, never in the addon install folder ✿ ʕ •ᴥ•ʔ
+    std::string account = ClientServices::GetAccountName() ? ClientServices::GetAccountName() : "";
+    if (account.empty()) account = "unknown";
+    std::string accountDir = "WTF/Account/" + account + "/WasmAddOns";
+    std::string charDir;
+    const char* realm = ClientServices::GetSelectedRealmName();
+    const char* character = ClientServices::GetCharacterName();
+    if (realm && *realm && character && *character)
+        charDir = "WTF/Account/" + account + "/" + realm + "/" + character + "/WasmAddOns";
+    s_manager.SetStorageDirs(accountDir, charDir);
+    // ʕ •ᴥ•ʔ✿ The addon list owns the checkbox. A disabled package does not start ✿ ʕ •ᴥ•ʔ
+    s_manager.SetPackageFilter([](const std::string& directory) {
+        std::string name = fs::path(directory).filename().string();
+        const char* character = ClientServices::GetCharacterName();
+        return GetAddOnEnableState(name.c_str(), character ? character : "", true) != 0;
+    });
+    s_manager.ScanAndLoadAll();
+}
+void WasmAddonClient_UnloadWorldAddOns() {
+    if (!s_initialized) return;
+    s_manager.SetStorageDirs("", "");
+    for (auto& info : s_manager.GetInspector())
+        if (info.state != WasmAddon::AddonState::Unloaded) s_manager.UnloadAddon(info.manifest.id);
+}
+
+static std::string PackageDirectory(const char* name) {
+    if (!name || !name[0]) return {};
+    for (const auto& info : s_manager.GetInspector()) {
+        if (!strcasecmp(fs::path(info.directory).filename().string().c_str(), name)) return info.directory;
+    }
+    fs::path dir = fs::path(s_manager.RootDir()) / name;
+    if (fs::exists(dir)) return dir.string();
+    return {};
+}
+
+bool WasmAddonClient_LoadPackage(const char* name) {
+    if (!s_initialized) return false;
+    const char* character = ClientServices::GetCharacterName();
+    if (GetAddOnEnableState(name, character ? character : "", true) == 0) return false;
+    std::string dir = PackageDirectory(name);
+    if (dir.empty()) return false;
+    for (const auto& info : s_manager.GetInspector()) {
+        if (info.directory == dir && (info.state == WasmAddon::AddonState::Loaded || info.state == WasmAddon::AddonState::Running || info.state == WasmAddon::AddonState::Suspended))
+            return true;
+    }
+    return s_manager.LoadAddon(dir);
+}
+
+bool WasmAddonClient_UnloadPackage(const char* name) {
+    if (!s_initialized) return false;
+    for (const auto& info : s_manager.GetInspector()) {
+        if (strcasecmp(fs::path(info.directory).filename().string().c_str(), name)) continue;
+        if (info.state != WasmAddon::AddonState::Unloaded) s_manager.UnloadAddon(info.manifest.id);
+        return true;
+    }
+    return false;
+}
+
+bool WasmAddonClient_ReloadPackage(const char* name) {
+    WasmAddonClient_UnloadPackage(name);
+    return WasmAddonClient_LoadPackage(name);
+}
+
+void WasmAddonClient_Shutdown() {
+    if (!s_initialized) return;
+    FrameScript_SetEventObserver(nullptr, nullptr);
+    ConsoleCommandUnregister("wasmgrant");
+    ConsoleCommandUnregister("wasmdeny");
+    ConsoleCommandUnregister("wasmaddons");
+    ConsoleCommandUnregister("wasmstorage");
+    ConsoleCommandUnregister("wasmconfirm");
+    WasmAddonClient_UnloadWorldAddOns();
+    s_manager.Shutdown();
+    s_initialized = false;
+}

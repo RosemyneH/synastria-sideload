@@ -1,0 +1,4 @@
+#ifndef WOW_SOURCE_UI_CGQUEST_C_H
+#define WOW_SOURCE_UI_CGQUEST_C_H
+
+#endif

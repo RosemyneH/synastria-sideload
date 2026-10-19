@@ -1,0 +1,6 @@
+LIBRARY XvidDecoder
+EXPORTS
+    DivxDecode
+    InitializeDivxDecoder
+    SetOutputFormat
+    UnInitializeDivxDecoder

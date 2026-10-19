@@ -1,0 +1,35 @@
+name: macos-arm64
+
+# ʕ •ᴥ•ʔ✿ Not tested. Manual only, so it does not sit next to the Windows and Linux clients. ✿ ʕ •ᴥ•ʔ
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: brew install ninja sdl2 xvid molten-vk vulkan-loader vulkan-headers vulkan-tools
+
+      - name: Configure
+        run: |
+          cmake -S . -B build/mac -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+
+      - name: Build Os + Gx
+        run: cmake --build build/mac --target Os Gx -j3
+
+      # Full WowClient on macOS still fails (malloc.h, FMOD codec paths, etc.); gate Vulkan+Os compile until the port catches up.
+      - name: Smoke Gx
+        run: |
+          file build/mac/lib/libGx.a
+          file build/mac/lib/libOs.a

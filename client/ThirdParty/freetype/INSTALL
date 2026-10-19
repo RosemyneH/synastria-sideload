@@ -1,0 +1,33 @@
+In order to build the library, read the `BUILD' document in the `docs'
+directory.  Quick starter: Go to `freetype2', then:
+
+  Unix + GNU Make:
+
+     - make  (don't worry, this will invoke a configure script)
+     - make
+     - make install
+
+    alternatively, you can pass parameters to the configure script
+    with the CFG variable, as in:
+
+     - make CFG="--prefix=/usr"
+     - make
+     - make install
+
+
+  Windows + gcc + GNU Make:
+
+     - make
+     - make
+
+  Windows + Visual C++ + GNU Make:
+
+     - make setup visualc
+     - make
+
+  Windows + Win32-LCC + GNU Make:
+
+     - make setup lcc
+     - make
+
+  etc.

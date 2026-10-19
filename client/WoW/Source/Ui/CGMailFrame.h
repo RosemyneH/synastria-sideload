@@ -1,0 +1,4 @@
+#ifndef WOW_SOURCE_UI_CGMAILFRAME_H
+#define WOW_SOURCE_UI_CGMAILFRAME_H
+
+#endif

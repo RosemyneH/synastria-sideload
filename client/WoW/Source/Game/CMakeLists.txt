@@ -1,0 +1,17 @@
+file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
+wowdecomp_filter_platform_sources_apple_uses_linux(PRIVATE_SOURCES)
+
+add_library(Game STATIC
+    ${PRIVATE_SOURCES}
+)
+
+target_include_directories(Game
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(Game
+    PUBLIC
+        pcreposix
+        freetype
+)
