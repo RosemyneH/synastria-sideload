@@ -1233,20 +1233,21 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_set_loot_filter_rule.inc"
 #include "natives/custom_loot_filter_export.inc"
 #include "natives/custom_loot_filter_import.inc"
+#include "natives/custom_loot_filter_import_rule.inc"
 #include "natives/custom_get_item_select_count.inc"
 #include "natives/custom_set_item_select_filter.inc"
 #include "natives/custom_get_item_select.inc"
 #include "natives/custom_clear_dressup_facing.inc"
 #include "natives/get_safe_invoke_queue.inc"
 #include "natives/set_item_tracker_class_mask.inc"
+#include "natives/custom_get_transmog_enchant.inc"
 #include "natives/custom_loot_filter_export_rule.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
 
 const char* kStubs[] = {
-    "Custom_LootFilterImportRule",
     "Custom_SetDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
-    "Custom_GetTransmogEnchant", "Custom_FixupTransmogId",
+    "Custom_FixupTransmogId",
 };
 
 bool bind_lua() {
@@ -1544,6 +1545,7 @@ void register_natives() {
     register_cmc("Custom_SetLootFilterRule", native_set_loot_filter_rule);
     register_cmc("Custom_LootFilterExport", native_loot_filter_export);
     register_cmc("Custom_LootFilterImport", native_loot_filter_import);
+    register_cmc("Custom_LootFilterImportRule", native_loot_filter_import_rule);
     register_cmc("Custom_LootFilterExportRule", native_loot_filter_export_rule);
     register_cmc("Custom_GetItemSelectCount", native_get_item_select_count);
     register_cmc("Custom_SetItemSelectFilter", native_set_item_select_filter);
@@ -1569,6 +1571,7 @@ void register_natives() {
     register_cmc("GetItemExtraCustom", native_item_extra);
     register_cmc("GetItemAffixMask", native_affix_mask);
     register_cmc("SetItemTrackerClassMask", native_item_tracker_class_mask);
+    register_cmc("Custom_GetTransmogEnchant", native_get_transmog_enchant);
     register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
     register_cmc("Custom_GetAllTrackObjLoc", native_get_all_track_obj_loc);
     register_cmc("Custom_GetMapMarker", native_get_map_marker);
