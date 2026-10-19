@@ -200,6 +200,7 @@ FILE* g_log = nullptr;
 uint32_t g_token = 0;
 bool g_handler_ready = false;
 bool g_announced = false;
+std::string g_pending_script;
 bool g_create_ready = false;
 bool g_lua_ready = false;
 bool g_login_error_logged = false;
@@ -360,7 +361,6 @@ void send_presence() {
         return;
     }
     g_announced = true;
-    send_ack();
     alignas(16) unsigned char raw[64];
     memset(raw, 0, sizeof(raw));
     g_ctor(raw);
@@ -458,6 +458,26 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
     if (cmd == 1) {
         send_ack();
         log_line("ack opcode=%#x tag=%#x token=%u", kOpcode, kReplyTag, g_token);
+    }
+    if (cmd == 4 && rest && left >= 3) {
+        uint32_t off = 1;
+        if (rest[0] != 0) {
+            off = 5;
+        }
+        uint16_t n = 0;
+        if (off + 2 <= left) {
+            memcpy(&n, rest + off, 2);
+            off += 2;
+        }
+        if (n > 0 && off + n <= left) {
+            g_pending_script.assign(reinterpret_cast<const char*>(rest + off), n);
+            log_line("server script queued %u bytes", n);
+            if (syn_features_scripts_done() && g_lua_execute) {
+                g_lua_execute(g_pending_script.c_str(), "WoWExtPkt", "synastria");
+                log_line("server script %zu bytes", g_pending_script.size());
+                g_pending_script.clear();
+            }
+        }
     }
     if (cmd == 21 && rest && left >= 4) {
         uint32_t stamp = 0;
@@ -613,7 +633,6 @@ int hook_process(void* self, uint32_t time, void* msg, int unused) {
         ensure_handler(self);
         if (peek_opcode(msg) == kLoginVerifyWorld) {
             syn_features_world();
-            send_presence();
         }
     }
     int result = g_process(self, time, msg, unused);
@@ -675,7 +694,6 @@ int hook_handle_data(void* self, uint32_t time, void* data, int size) {
         memcpy(&opcode, data, sizeof(opcode));
         if (opcode == kLoginVerifyWorld) {
             syn_features_world();
-            send_presence();
         }
     }
     return g_handle_data(self, time, data, size);
@@ -767,6 +785,7 @@ void pump_main(bool in_game) {
                 g_lua_ready = false;
                 g_create_ready = false;
                 g_login_error_logged = false;
+                g_announced = false;
                 syn_features_reset();
             }
             g_seen_lua = state;
@@ -777,6 +796,14 @@ void pump_main(bool in_game) {
     ensure_lua();
     if (in_game) {
         syn_features_after();
+        if (syn_features_scripts_done()) {
+            send_presence();
+            if (!g_pending_script.empty() && g_lua_execute) {
+                g_lua_execute(g_pending_script.c_str(), "WoWExtPkt", "synastria");
+                log_line("server script %zu bytes", g_pending_script.size());
+                g_pending_script.clear();
+            }
+        }
     }
     g_main_depth--;
 }

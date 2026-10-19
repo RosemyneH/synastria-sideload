@@ -2341,6 +2341,10 @@ void syn_features_harvest() {
     harvest_characters();
 }
 
+bool syn_features_scripts_done() {
+    return g_scripts_ready;
+}
+
 void syn_features_after() {
     if (!g_natives_ready || g_scripts_ready) {
         return;
