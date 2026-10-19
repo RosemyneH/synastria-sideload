@@ -2169,42 +2169,10 @@ void adopt_classes(const uint8_t* rest, uint32_t size) {
 
 constexpr uint32_t kSpellBytes = 0x2b8;
 constexpr int kSpellNameAt = 0x220;
-constexpr int kSpellClassAt = 0x250;
+constexpr int kSpellDescAt = 0x230;
+constexpr int kSpellAuraAt = 0x238;
+constexpr int kSpellIconAt = 0x214;
 constexpr int kSpellIdLimit = 0x1fbd0;
-
-int spell_family(const std::string& text) {
-    if (text.find("Death Knight") != std::string::npos) {
-        return 15;
-    }
-    if (text.find("Druid") != std::string::npos) {
-        return 7;
-    }
-    if (text.find("Priest") != std::string::npos) {
-        return 6;
-    }
-    if (text.find("Paladin") != std::string::npos) {
-        return 10;
-    }
-    if (text.find("Warrior") != std::string::npos) {
-        return 4;
-    }
-    if (text.find("Rogue") != std::string::npos) {
-        return 8;
-    }
-    if (text.find("Hunter") != std::string::npos) {
-        return 9;
-    }
-    if (text.find("Shaman") != std::string::npos) {
-        return 11;
-    }
-    if (text.find("Mage") != std::string::npos) {
-        return 3;
-    }
-    if (text.find("Warlock") != std::string::npos) {
-        return 5;
-    }
-    return 0;
-}
 
 struct SpellTable {
     uint8_t* base = nullptr;
@@ -2249,16 +2217,6 @@ SpellTable& spell_table() {
         table.compress_row = reinterpret_cast<uint32_t (*)(const uint8_t*, uint32_t, uint8_t*)>(found);
     }
     return table;
-}
-
-bool spell_known(SpellTable& table, int id) {
-    if (!table.by_id || id < table.min_id || id > table.max_id) {
-        return false;
-    }
-    if (table.plain.find(id) != table.plain.end()) {
-        return true;
-    }
-    return table.by_id[id - table.min_id] != nullptr;
 }
 
 void spell_grow(SpellTable& table, int id) {
@@ -2335,7 +2293,7 @@ void spell_store(SpellTable& table, int id) {
     table.by_id[id - table.min_id] = blob.data();
 }
 
-void spell_set_name(SpellTable& table, int id, const char* text, int length) {
+void spell_set_text(SpellTable& table, int id, int at, const uint8_t* text, int length) {
     uint8_t* row = spell_plain(table, id);
     if (!row || length <= 0) {
         return;
@@ -2344,34 +2302,99 @@ void spell_set_name(SpellTable& table, int id, const char* text, int length) {
     memcpy(copy, text, static_cast<size_t>(length));
     copy[length] = 0;
     table.text.push_back(copy);
-    memcpy(row + kSpellNameAt, &copy, sizeof(copy));
+    memcpy(row + at, &copy, sizeof(copy));
     spell_store(table, id);
 }
 
-void spell_set_family(SpellTable& table, int id, int family) {
-    uint8_t* row = spell_plain(table, id);
-    if (!row || family == 0) {
+void spell_copy_icon(SpellTable& table, int id, int source) {
+    if (source < table.min_id || source > table.max_id || !table.by_id) {
         return;
     }
-    int32_t value = family;
-    memcpy(row + kSpellClassAt, &value, 4);
+    if (table.plain.find(source) == table.plain.end() && !table.by_id[source - table.min_id]) {
+        return;
+    }
+    uint8_t* from = spell_plain(table, source);
+    uint8_t* row = spell_plain(table, id);
+    if (!from || !row) {
+        return;
+    }
+    memcpy(row + kSpellIconAt, from + kSpellIconAt, 8);
     spell_store(table, id);
 }
 
-bool spell_text_ok(const uint8_t* data, int length) {
-    if (length < 2) {
-        return false;
-    }
-    if (data[0] < 'A' || data[0] > 'Z') {
-        return false;
-    }
-    for (int i = 0; i < length; ++i) {
-        unsigned char c = data[i];
-        if (c < 32 || c > 126) {
+bool spell_mod_skip(const uint8_t* data, int size, int& cursor, int type) {
+    auto fixed = [&](int bytes) {
+        if (cursor + bytes > size) {
             return false;
         }
+        cursor += bytes;
+        return true;
+    };
+    auto chars = [&]() {
+        if (cursor + 2 > size) {
+            return false;
+        }
+        uint16_t length = 0;
+        memcpy(&length, data + cursor, 2);
+        if (cursor + 2 + length > size) {
+            return false;
+        }
+        cursor += 2 + length;
+        return true;
+    };
+    if (type == 1 || type == 4 || type == 9 || type == 10 || type == 23 || type == 24 || type == 26 || type == 28
+        || type == 31 || type == 32 || type == 40 || type == 41 || type == 47 || type == 53 || type == 54 || type == 55) {
+        return fixed(8);
     }
-    return true;
+    if (type == 11 || type == 18 || type == 21 || type == 27 || type == 30 || type == 33) {
+        return fixed(9);
+    }
+    if (type == 14 || type == 19 || type == 35) {
+        return fixed(12);
+    }
+    if (type == 17 || type == 20 || type == 25) {
+        return fixed(13);
+    }
+    if (type == 8 || type == 13) {
+        return fixed(16);
+    }
+    if (type == 12) {
+        return fixed(17);
+    }
+    if (type == 16) {
+        return fixed(10);
+    }
+    if (type == 39) {
+        return fixed(5);
+    }
+    if (type == 3) {
+        if (!fixed(12)) {
+            return false;
+        }
+        return chars() && chars();
+    }
+    if (type == 34) {
+        if (cursor >= size) {
+            return false;
+        }
+        int count = data[cursor++];
+        return fixed(count * 12);
+    }
+    if (type == 44) {
+        if (cursor + 6 > size) {
+            return false;
+        }
+        uint16_t bits = 0;
+        memcpy(&bits, data + cursor, 2);
+        cursor += 6;
+        for (int bit = 0; bit < 6; ++bit) {
+            if ((bits & (1u << bit)) && !fixed(4)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
 }
 
 void publish_spell_records() {
@@ -2406,14 +2429,14 @@ void publish_spell_records() {
     }
     std::vector<char> plain(1 << 22);
     size_t offset = 12;
-    std::map<int, std::pair<int, std::string>> named;
+    int names = 0;
+    int described = 0;
+    int icons = 0;
     for (uint32_t i = 0; i < count; ++i) {
-        uint32_t id = 0;
         uint32_t bytes = 0;
         if (offset + 24 > data.size()) {
             break;
         }
-        memcpy(&id, data.data() + offset, 4);
         offset += 20;
         memcpy(&bytes, data.data() + offset, 4);
         offset += 4;
@@ -2423,53 +2446,74 @@ void publish_spell_records() {
         int plain_size = LZ4_decompress_safe(reinterpret_cast<const char*>(data.data() + offset), plain.data(),
                                               static_cast<int>(bytes), static_cast<int>(plain.size()));
         offset += bytes;
-        if (plain_size < 16 || static_cast<uint8_t>(plain[1]) != 0x0f) {
+        if (plain_size < 8) {
             continue;
         }
         const uint8_t* cursor = reinterpret_cast<const uint8_t*>(plain.data());
-        for (int k = 8; k + 8 < plain_size; ++k) {
-            if (cursor[k] != 0 || cursor[k + 1] != 0) {
+        int at = 0;
+        while (at + 2 <= plain_size) {
+            ++at;
+            int type = 0;
+            int shift = 0;
+            bool typed = false;
+            while (at < plain_size && shift < 28) {
+                uint8_t bite = cursor[at++];
+                type |= (bite & 0x7f) << shift;
+                if ((bite & 0x80) == 0) {
+                    typed = true;
+                    break;
+                }
+                shift += 7;
+            }
+            if (!typed || type < 1 || type > 57) {
+                break;
+            }
+            if (type == 5 || type == 6 || type == 7) {
+                if (at + 6 > plain_size) {
+                    break;
+                }
+                uint32_t spell = 0;
+                uint16_t span = 0;
+                memcpy(&spell, cursor + at, 4);
+                memcpy(&span, cursor + at + 4, 2);
+                at += 6;
+                if (at + span > plain_size) {
+                    break;
+                }
+                // ʕ •ᴥ•ʔ✿ Type 6 is the description. The 64-bit pointer is 8 bytes past the 32-bit slot. ✿ ʕ •ᴥ•ʔ
+                if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit) && span > 0) {
+                    int field = type == 5 ? kSpellNameAt : type == 6 ? kSpellDescAt : kSpellAuraAt;
+                    spell_set_text(table, static_cast<int>(spell), field, cursor + at, span);
+                    if (type == 5) {
+                        ++names;
+                    } else {
+                        ++described;
+                    }
+                }
+                at += span;
                 continue;
             }
-            uint16_t span = 0;
-            memcpy(&span, cursor + k + 2, 2);
-            if (span < 4 || span > 40 || k + 4 + span > plain_size || !spell_text_ok(cursor + k + 4, span)) {
+            if (type == 10) {
+                if (at + 8 > plain_size) {
+                    break;
+                }
+                uint32_t spell = 0;
+                uint32_t source = 0;
+                memcpy(&spell, cursor + at, 4);
+                memcpy(&source, cursor + at + 4, 4);
+                at += 8;
+                if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit) && source < static_cast<uint32_t>(kSpellIdLimit)) {
+                    spell_copy_icon(table, static_cast<int>(spell), static_cast<int>(source));
+                    ++icons;
+                }
                 continue;
             }
-            if (memchr(cursor + k + 4, '$', span)) {
-                continue;
+            if (!spell_mod_skip(cursor, plain_size, at, type)) {
+                break;
             }
-            uint16_t spell = 0;
-            memcpy(&spell, cursor + k - 2, 2);
-            if (spell < 100) {
-                continue;
-            }
-            std::string text(reinterpret_cast<const char*>(cursor + k + 4), span);
-            auto& slot = named[spell];
-            slot.first += 1;
-            slot.second = std::move(text);
         }
     }
-    int names = 0;
-    int created = 0;
-    for (const auto& item : named) {
-        if (item.second.first != 1) {
-            continue;
-        }
-        int spell = item.first;
-        if (spell_known(table, spell)) {
-            continue;
-        }
-        const std::string& text = item.second.second;
-        spell_set_name(table, spell, text.c_str(), static_cast<int>(text.size()));
-        int family = spell_family(text);
-        if (family) {
-            spell_set_family(table, spell, family);
-        }
-        ++names;
-        ++created;
-    }
-    log_line("spell db names=%d created=%d", names, created);
+    log_line("spell db names=%d text=%d icons=%d", names, described, icons);
 }
 
 void publish_item_records() {
