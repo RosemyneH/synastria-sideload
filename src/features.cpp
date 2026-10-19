@@ -393,6 +393,7 @@ int cmc_color(void* state) {
 }
 
 void apply_saved_talents();
+void refresh_talent_tabs();
 
 int cmc_talents(void* state) {
     int index = arg_int(state, 1);
@@ -402,6 +403,7 @@ int cmc_talents(void* state) {
         return 1;
     }
     set_num(22, 2, index);
+    refresh_talent_tabs();
     apply_saved_talents();
     syn_net_notify(7, static_cast<uint32_t>(slot), nullptr);
     g_push_bool(state, 1);
@@ -1976,6 +1978,7 @@ struct TalentApply {
     void (*ctor)(void*) = nullptr;
     void (*dtor)(void*) = nullptr;
     void (*put)(void*, uint8_t) = nullptr;
+    void (*finalize)(void*) = nullptr;
     bool ready = false;
 };
 
@@ -2004,7 +2007,18 @@ TalentApply& talent_apply() {
     if (syn_resolve("_ZN10CDataStore3PutEh", &found)) {
         api.put = reinterpret_cast<void (*)(void*, uint8_t)>(found);
     }
+    if (syn_resolve("_ZN10CDataStore8FinalizeEv", &found)) {
+        api.finalize = reinterpret_cast<void (*)(void*)>(found);
+    }
     return api;
+}
+
+void refresh_talent_tabs() {
+    TalentApply& tabs = talent_apply();
+    if (g_in_world && tabs.leave && tabs.enter) {
+        tabs.leave();
+        tabs.enter();
+    }
 }
 
 void apply_saved_talents() {
@@ -2016,12 +2030,8 @@ void apply_saved_talents() {
         return;
     }
     TalentApply& api = talent_apply();
-    if (!api.update || !api.ctor || !api.dtor || !api.put) {
+    if (!api.update || !api.ctor || !api.dtor || !api.put || !api.finalize) {
         return;
-    }
-    if (g_in_world && api.leave && api.enter) {
-        api.leave();
-        api.enter();
     }
     alignas(16) unsigned char raw[64];
     memset(raw, 0, sizeof(raw));
@@ -2029,6 +2039,7 @@ void apply_saved_talents() {
     for (uint8_t byte : g_class_talents[slot]) {
         api.put(raw, byte);
     }
+    api.finalize(raw);
     api.update(raw);
     api.dtor(raw);
     log_line("applied class talent slot=%d bytes=%zu", slot, g_class_talents[slot].size());
