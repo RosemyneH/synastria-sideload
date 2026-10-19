@@ -2804,6 +2804,89 @@ void apply_game_data(const uint8_t* rest, uint32_t size) {
     log_line("game data records=%u applied=%d blobs=%d", count, applied, skipped);
 }
 
+void apply_loot_filter(const uint8_t* rest, uint32_t size) {
+    if (!rest || size < 5 || rest[0] != 1) {
+        return;
+    }
+    uint32_t nbytes = 0;
+    memcpy(&nbytes, rest + 1, 4);
+    if (nbytes == 0 || nbytes > 0xffff || 5u + nbytes > size) {
+        log_line("loot filter rejected len=%u size=%u", nbytes, size);
+        return;
+    }
+    loot_filter_obj local{};
+    for (int i = 0; i < 32; ++i) {
+        loot_import_rule_init(local.rules[i]);
+    }
+    loot_import_buf in{const_cast<uint8_t*>(rest + 5), 0, static_cast<int32_t>(nbytes), 0};
+    bool ok = loot_import_parse(&local, &in);
+    if (ok) {
+        if (!loot_filter) {
+            loot_filter = new loot_filter_obj{};
+            for (int i = 0; i < 32; ++i) {
+                loot_import_rule_init(loot_filter->rules[i]);
+            }
+        }
+        loot_import_commit(loot_filter, &local);
+        log_line("loot filter rules=%u options=%u", loot_filter->rule_count, loot_filter->options);
+    } else {
+        log_line("loot filter import failed at %d/%u", in.pos, nbytes);
+    }
+    for (int i = 0; i < 32; ++i) {
+        loot_import_rule_free(local.rules[i]);
+    }
+}
+
+// ʕ •ᴥ•ʔ✿ Bit 15 of the slot word is the name flag. Slots 0..14 are item ids at set*100+11. ✿ ʕ •ᴥ•ʔ
+void apply_transmog_sets(const uint8_t* rest, uint32_t size) {
+    PktReader in{rest, size};
+    if (in.u8() != 0) {
+        return;
+    }
+    int count = static_cast<int8_t>(in.u8());
+    int active = static_cast<int8_t>(in.u8());
+    uint16_t options = in.u16();
+    if (!in.ok) {
+        return;
+    }
+    set_num(26, 1, active);
+    set_num(26, 2, options);
+    int items = 0;
+    int names = 0;
+    for (int set = 1; set <= count && in.ok; ++set) {
+        int base = set * 100;
+        uint16_t bits = in.u16();
+        for (int slot = 0; slot < 15 && in.ok; ++slot) {
+            if ((bits & (1u << slot)) == 0) {
+                continue;
+            }
+            set_num(26, base + 11 + slot, in.u16());
+            ++items;
+        }
+        if (in.ok && static_cast<int16_t>(bits) < 0) {
+            uint8_t len = in.u8();
+            if (!in.ok || in.off + len > in.size) {
+                in.ok = false;
+            } else {
+                g_game[27].strs[set].assign(reinterpret_cast<const char*>(in.data + in.off), len);
+                in.off += len;
+                ++names;
+            }
+        }
+        uint8_t enchants = in.u8();
+        for (int slot = 0; slot < 4 && in.ok; ++slot) {
+            if ((enchants & (1u << slot)) == 0) {
+                continue;
+            }
+            set_num(26, base + 3 + slot, in.u16());
+        }
+        if (in.ok) {
+            set_num(26, base + 1, in.u16());
+        }
+    }
+    log_line("transmog sets=%d active=%d items=%d names=%d ok=%d", count, active, items, names, in.ok ? 1 : 0);
+}
+
 void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size) {
     if (cmd == 7 && rest) {
         apply_init_game(rest, size);
@@ -2813,6 +2896,12 @@ void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size) {
     }
     if (cmd == 14 && rest) {
         adopt_classes(rest, size);
+    }
+    if (cmd == 15 && rest) {
+        apply_loot_filter(rest, size);
+    }
+    if (cmd == 17 && rest) {
+        apply_transmog_sets(rest, size);
     }
 }
 
