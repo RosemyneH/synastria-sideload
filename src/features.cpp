@@ -1151,6 +1151,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_quest_completed.inc"
 #include "natives/itemloc_source_count.inc"
 #include "natives/custom_get_spell_desc.inc"
+#include "natives/custom_get_spell_cooldown.inc"
 #include "natives/custom_get_item_count.inc"
 #include "natives/custom_get_quest_req.inc"
 #include "natives/custom_get_prequest.inc"
@@ -1181,7 +1182,7 @@ const char* kStubs[] = {
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_HaveAnyRewardOfQuest", "Custom_GetQuestFaction",
     "Custom_GetSkillIndex",
-    "Custom_GetSpellCooldown", "Custom_GetSpellTools", "Custom_GetSpellEffect",
+    "Custom_GetSpellTools", "Custom_GetSpellEffect",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
     "Custom_GetGossipQuests", "Custom_GetHighestLearnedSpell", "Custom_TranslateMapPosition",
@@ -1423,6 +1424,7 @@ void register_natives() {
     register_cmc("ItemLocItemIsInMultiZone", native_itemloc_item_in_multi_zone);
     register_cmc("ItemLocSourceIsInZone", native_itemloc_source_in_zone);
     register_cmc("Custom_GetSpellDesc", native_get_spell_desc);
+    register_cmc("Custom_GetSpellCooldown", native_get_spell_cooldown);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
