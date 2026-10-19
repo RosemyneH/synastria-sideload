@@ -1200,6 +1200,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_tradeskill_tools.inc"
 #include "natives/custom_queue_event.inc"
 #include "natives/custom_get_pending_events_ex.inc"
+#include "natives/custom_get_entity_extra_int.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
@@ -1221,7 +1222,7 @@ const char* kStubs[] = {
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem",
-    "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
+    "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe",
@@ -1484,6 +1485,7 @@ void register_natives() {
     register_cmc("Custom_IsContainerItemSoulbound", native_is_container_soulbound);
     register_cmc("Custom_GetPendingEvents", native_get_pending_events);
     register_cmc("Custom_GetPendingEventsEx", native_get_pending_events_ex);
+    register_cmc("Custom_GetEntityExtraDataInt", native_get_entity_extra_int);
     register_cmc("Custom_GetQuestItemId", native_get_quest_item_id);
     register_cmc("Custom_GetTradeSkillTools", native_get_tradeskill_tools);
     register_cmc("Custom_QueueEvent", native_queue_event);
