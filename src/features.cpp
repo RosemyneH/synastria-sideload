@@ -4,6 +4,7 @@
 
 #if defined(SYNASTRIA_EMBED)
 #include "WoW/Source/Magic/MagicClient/SpellTable.h"
+#include "WoW/Source/Ui/SpellBookFrame.h"
 #endif
 
 #include <lz4.h>
@@ -2307,6 +2308,11 @@ void adopt_classes(const uint8_t* rest, uint32_t size) {
         blob.clear();
     }
     log_line("dual class list count=%u first=%u second=%u", count, next[0].id, count > 1 ? next[1].id : 0);
+#if defined(SYNASTRIA_EMBED)
+    if (g_in_world) {
+        CGSpellBook::RefileSpells();
+    }
+#endif
 }
 
 constexpr uint32_t kSpellBytes = 0x2b8;

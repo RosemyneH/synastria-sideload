@@ -29,6 +29,7 @@
 #endif
 
 #ifdef SYNASTRIA_EMBED
+#include "WoW/Source/Magic/MagicClient/SpellTable.h"
 void syn_bind_client();
 #endif
 
@@ -1260,6 +1261,7 @@ void install() {
 
 #ifdef SYNASTRIA_EMBED
     syn_bind_client();
+    SpellTableSetClassSource(syn_features_class_count, syn_features_class_id);
 #endif
     if (!resolve_all()) {
         return;
