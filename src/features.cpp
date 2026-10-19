@@ -1194,6 +1194,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_is_player_near.inc"
 #include "natives/custom_is_container_soulbound.inc"
 #include "natives/custom_get_pending_events.inc"
+#include "natives/custom_queue_event.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
@@ -1218,7 +1219,7 @@ const char* kStubs[] = {
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
     "Custom_CalculateMapMarker",
-    "Custom_GetPendingEventsEx", "Custom_QueueEvent", "Custom_QueueEventEx",
+    "Custom_GetPendingEventsEx", "Custom_QueueEventEx",
 };
 
 bool bind_lua() {
@@ -1475,6 +1476,7 @@ void register_natives() {
     register_cmc("Custom_IsPlayerNear", native_is_player_near);
     register_cmc("Custom_IsContainerItemSoulbound", native_is_container_soulbound);
     register_cmc("Custom_GetPendingEvents", native_get_pending_events);
+    register_cmc("Custom_QueueEvent", native_queue_event);
     register_cmc("Custom_GetSkillIndex", native_get_skill_index);
     register_cmc("Custom_GetGossipQuests", native_get_gossip_quests);
     register_cmc("Custom_GetMerchantItem", native_get_merchant_item);
