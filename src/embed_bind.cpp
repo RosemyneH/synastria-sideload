@@ -222,6 +222,7 @@ void syn_bind_client() {
     bind_ptr("g_itemSubClassDB", &g_itemSubClassDB);
     bind_ptr("g_mapDB", &g_mapDB);
     bind_ptr("g_skillLineDB", &g_skillLineDB);
+    bind_ptr("g_skillLineAbilityDB", &g_skillLineAbilityDB);
     bind_ptr("g_spellDB", &g_spellDB);
     bind_ptr("g_spellFocusObjectDB", &g_spellFocusObjectDB);
     bind_ptr("g_totemCategoryDB", &g_totemCategoryDB);

@@ -300,6 +300,12 @@ int32_t GetSkillTierCost(const SkillRaceClassInfoRec* info, uint32_t step) {
 
 // VERIFY: e9c3aee4 auto
 // OFFSET: 0x00810920
+void SpellTableResetSkillLines() {
+    s_skillLineRecs.Clear();
+    s_skillLineLinkInfo.m_count = 0;
+    s_skillLineLinkInfoDirty = true;
+}
+
 void SpellTableDestroy() {
     s_skillLineRecs.Clear();
     s_skillLineLinkInfoDirty = true;

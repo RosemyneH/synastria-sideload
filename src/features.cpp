@@ -2,6 +2,10 @@
 
 #include "sym.h"
 
+#if defined(SYNASTRIA_EMBED)
+#include "WoW/Source/Magic/MagicClient/SpellTable.h"
+#endif
+
 #include <lz4.h>
 
 #include <algorithm>
@@ -2463,6 +2467,51 @@ void spell_set_text(SpellTable& table, int id, int at, const uint8_t* text, int 
     spell_store(table, id);
 }
 
+struct SkillAdd {
+    uint16_t skill = 0;
+    uint32_t spell = 0;
+    uint16_t mask = 0;
+};
+
+std::vector<SkillAdd> g_skill_adds;
+
+void spell_copy_from(SpellTable& table, int dest, int source) {
+    if (dest <= 0 || source <= 0 || dest == source || dest >= kSpellIdLimit || source >= kSpellIdLimit) {
+        return;
+    }
+    uint8_t* from = spell_plain(table, source);
+    uint8_t* row = spell_plain(table, dest);
+    if (!from || !row) {
+        return;
+    }
+    memcpy(row, from, kSpellBytes);
+    int32_t id = dest;
+    memcpy(row, &id, 4);
+    spell_store(table, dest);
+}
+
+void spell_put_i32(SpellTable& table, int id, int at, int32_t value) {
+    uint8_t* row = spell_plain(table, id);
+    if (!row || at < 0 || at + 4 > static_cast<int>(kSpellBytes)) {
+        return;
+    }
+    memcpy(row + at, &value, 4);
+    spell_store(table, id);
+}
+
+bool take_text(const uint8_t* data, int size, int& cursor, const uint8_t*& text, uint16_t& length) {
+    if (cursor + 2 > size) {
+        return false;
+    }
+    memcpy(&length, data + cursor, 2);
+    if (cursor + 2 + length > size) {
+        return false;
+    }
+    text = data + cursor + 2;
+    cursor += 2 + length;
+    return true;
+}
+
 void spell_copy_icon(SpellTable& table, int id, int source) {
     if (source < table.min_id || source > table.max_id || !table.by_id) {
         return;
@@ -2503,6 +2552,15 @@ bool spell_mod_skip(const uint8_t* data, int size, int& cursor, int type) {
         || type == 31 || type == 32 || type == 40 || type == 41 || type == 47 || type == 53 || type == 54 || type == 55) {
         return fixed(8);
     }
+    if (type == 37) {
+        return true;
+    }
+    if (type == 38) {
+        return fixed(9);
+    }
+    if (type == 52) {
+        return fixed(7);
+    }
     if (type == 11 || type == 18 || type == 21 || type == 27 || type == 30 || type == 33) {
         return fixed(9);
     }
@@ -2537,6 +2595,44 @@ bool spell_mod_skip(const uint8_t* data, int size, int& cursor, int type) {
         int count = data[cursor++];
         return fixed(count * 12);
     }
+    if (type == 2) {
+        return fixed(4) && chars();
+    }
+    if (type == 29) {
+        int count = 0;
+        int shift = 0;
+        bool counted = false;
+        while (cursor < size && shift < 28) {
+            uint8_t bite = data[cursor++];
+            count |= (bite & 0x7f) << shift;
+            if ((bite & 0x80) == 0) {
+                counted = true;
+                break;
+            }
+            shift += 7;
+        }
+        return counted && fixed(count * 4);
+    }
+    if (type == 36) {
+        if (cursor + 8 > size) {
+            return false;
+        }
+        uint32_t flags = 0;
+        memcpy(&flags, data + cursor + 4, 4);
+        cursor += 8;
+        static const uint32_t low_bits[] = {1u, 2u, 4u, 8u, 0x10u};
+        for (uint32_t bit : low_bits) {
+            if ((flags & bit) && !fixed(4)) {
+                return false;
+            }
+        }
+        for (uint32_t bit = 0x20; bit <= 0x200; bit <<= 1) {
+            if ((flags & bit) && !fixed(8)) {
+                return false;
+            }
+        }
+        return true;
+    }
     if (type == 44) {
         if (cursor + 6 > size) {
             return false;
@@ -2551,7 +2647,89 @@ bool spell_mod_skip(const uint8_t* data, int size, int& cursor, int type) {
         }
         return true;
     }
+    if (type == 45 || type == 46) {
+        if (cursor + 2 > size) {
+            return false;
+        }
+        uint16_t count = 0;
+        memcpy(&count, data + cursor, 2);
+        cursor += 2;
+        return fixed(static_cast<int>(count) * 4);
+    }
+    if (type == 50) {
+        return fixed(5) && chars();
+    }
     return false;
+}
+
+void install_skill_abilities() {
+    if (g_skill_adds.empty()) {
+        return;
+    }
+    void* found = nullptr;
+    if (!syn_resolve("g_skillLineAbilityDB", &found) || !found) {
+        log_line("skill ability db missing");
+        return;
+    }
+    auto* db = static_cast<uint8_t*>(found);
+    int32_t count = 0;
+    int32_t max_id = 0;
+    int32_t min_id = 0;
+    memcpy(&count, db + 0x0c, 4);
+    memcpy(&max_id, db + 0x10, 4);
+    memcpy(&min_id, db + 0x14, 4);
+    uint8_t* records = nullptr;
+    uint8_t** by_id = nullptr;
+    memcpy(&records, db + 0x28, sizeof(records));
+    memcpy(&by_id, db + 0x30, sizeof(by_id));
+    if (!records || !by_id || count <= 0 || max_id < min_id) {
+        log_line("skill ability db empty");
+        return;
+    }
+    int extra = static_cast<int>(g_skill_adds.size());
+    int32_t new_max = max_id + extra;
+    auto* grown = new uint8_t[static_cast<size_t>(count + extra) * 0x38];
+    memcpy(grown, records, static_cast<size_t>(count) * 0x38);
+    size_t old_n = static_cast<size_t>(max_id - min_id + 1);
+    size_t new_n = static_cast<size_t>(new_max - min_id + 1);
+    uint8_t** grown_by = new uint8_t*[new_n]();
+    for (size_t i = 0; i < old_n; ++i) {
+        if (!by_id[i]) {
+            continue;
+        }
+        ptrdiff_t delta = by_id[i] - records;
+        if (delta >= 0 && static_cast<size_t>(delta) < static_cast<size_t>(count) * 0x38) {
+            grown_by[i] = grown + delta;
+        }
+    }
+    int32_t next = max_id;
+    int32_t slot = count;
+    for (const SkillAdd& add : g_skill_adds) {
+        ++next;
+        uint8_t* row = grown + static_cast<size_t>(slot) * 0x38;
+        memset(row, 0, 0x38);
+        int32_t id = next;
+        int32_t skill = add.skill;
+        int32_t spell = static_cast<int32_t>(add.spell);
+        int32_t mask = add.mask;
+        int32_t method = 1;
+        memcpy(row + 0x00, &id, 4);
+        memcpy(row + 0x04, &skill, 4);
+        memcpy(row + 0x08, &spell, 4);
+        memcpy(row + 0x10, &mask, 4);
+        memcpy(row + 0x24, &method, 4);
+        grown_by[static_cast<size_t>(next - min_id)] = row;
+        ++slot;
+    }
+    int32_t total = count + extra;
+    memcpy(db + 0x28, &grown, sizeof(grown));
+    memcpy(db + 0x30, &grown_by, sizeof(grown_by));
+    memcpy(db + 0x0c, &total, 4);
+    memcpy(db + 0x10, &new_max, 4);
+    log_line("skill abilities added %d", extra);
+#if defined(SYNASTRIA_EMBED)
+    SpellTableResetSkillLines();
+#endif
 }
 
 void publish_spell_records() {
@@ -2564,6 +2742,7 @@ void publish_spell_records() {
         return;
     }
     done = true;
+    g_skill_adds.clear();
     char path[1024];
     snprintf(path, sizeof(path), "%s/WoWExt.bin", g_root);
     FILE* file = fopen(path, "rb");
@@ -2589,6 +2768,8 @@ void publish_spell_records() {
     int names = 0;
     int described = 0;
     int icons = 0;
+    int copies = 0;
+    int auras = 0;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t bytes = 0;
         if (offset + 24 > data.size()) {
@@ -2624,6 +2805,105 @@ void publish_spell_records() {
             }
             if (!typed || type < 1 || type > 57) {
                 break;
+            }
+            if (type == 1 || type == 24) {
+                if (at + 8 > plain_size) {
+                    break;
+                }
+                uint32_t source = 0;
+                uint32_t dest = 0;
+                memcpy(&source, cursor + at, 4);
+                memcpy(&dest, cursor + at + 4, 4);
+                at += 8;
+                spell_copy_from(table, static_cast<int>(dest), static_cast<int>(source));
+                if (type == 24) {
+                    spell_put_i32(table, static_cast<int>(dest), 0x134, 0);
+                    spell_put_i32(table, static_cast<int>(dest), 0x138, 0);
+                    spell_put_i32(table, static_cast<int>(dest), 0x13c, 0);
+                    uint8_t* row = spell_plain(table, static_cast<int>(dest));
+                    if (row) {
+                        char* blank = nullptr;
+                        memcpy(row + kSpellNameAt + static_cast<int>(sizeof(char*)), &blank, sizeof(blank));
+                        spell_store(table, static_cast<int>(dest));
+                    }
+                }
+                ++copies;
+                continue;
+            }
+            if (type == 3) {
+                if (at + 12 > plain_size) {
+                    break;
+                }
+                uint32_t spell = 0;
+                uint32_t flags = 0;
+                uint32_t icon_from = 0;
+                memcpy(&spell, cursor + at, 4);
+                memcpy(&flags, cursor + at + 4, 4);
+                memcpy(&icon_from, cursor + at + 8, 4);
+                at += 12;
+                const uint8_t* name = nullptr;
+                const uint8_t* aura = nullptr;
+                uint16_t name_n = 0;
+                uint16_t aura_n = 0;
+                if (!take_text(cursor, plain_size, at, name, name_n) || !take_text(cursor, plain_size, at, aura, aura_n)) {
+                    break;
+                }
+                if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit)) {
+                    spell_copy_from(table, static_cast<int>(spell), 0x659d);
+                    int32_t attr = static_cast<int32_t>(0x89000000);
+                    if (flags & 1u) {
+                        attr = static_cast<int32_t>(0x8d000000);
+                    }
+                    if ((flags & 2u) == 0) {
+                        attr |= 0x100;
+                    }
+                    if ((flags & 4u) == 0) {
+                        attr |= 0x20000000;
+                    }
+                    spell_put_i32(table, static_cast<int>(spell), 0x10, attr);
+                    if (name_n > 0) {
+                        spell_set_text(table, static_cast<int>(spell), kSpellNameAt, name, name_n);
+                    }
+                    if (aura_n > 0) {
+                        spell_set_text(table, static_cast<int>(spell), kSpellAuraAt, aura, aura_n);
+                    }
+                    if (icon_from > 0 && icon_from < static_cast<uint32_t>(kSpellIdLimit)) {
+                        spell_copy_icon(table, static_cast<int>(spell), static_cast<int>(icon_from));
+                    }
+                    ++auras;
+                }
+                continue;
+            }
+            if (type == 11) {
+                if (at + 9 > plain_size) {
+                    break;
+                }
+                uint32_t spell = 0;
+                uint32_t effect = 0;
+                uint8_t index = cursor[at + 4];
+                memcpy(&spell, cursor + at, 4);
+                memcpy(&effect, cursor + at + 5, 4);
+                at += 9;
+                if (spell > 0 && spell < static_cast<uint32_t>(kSpellIdLimit) && index < 3) {
+                    spell_put_i32(table, static_cast<int>(spell), 0x11c + static_cast<int>(index) * 4, static_cast<int32_t>(effect));
+                }
+                continue;
+            }
+            if (type == 26) {
+                if (at + 8 > plain_size) {
+                    break;
+                }
+                uint16_t skill = 0;
+                uint32_t spell = 0;
+                uint16_t mask = 0;
+                memcpy(&skill, cursor + at, 2);
+                memcpy(&spell, cursor + at + 2, 4);
+                memcpy(&mask, cursor + at + 6, 2);
+                at += 8;
+                if (spell > 0 && skill > 0) {
+                    g_skill_adds.push_back(SkillAdd{skill, spell, mask});
+                }
+                continue;
             }
             if (type == 5 || type == 6 || type == 7) {
                 if (at + 6 > plain_size) {
@@ -2670,7 +2950,9 @@ void publish_spell_records() {
             }
         }
     }
-    log_line("spell db names=%d text=%d icons=%d", names, described, icons);
+    install_skill_abilities();
+    log_line("spell db names=%d text=%d icons=%d copies=%d auras=%d skills=%zu",
+             names, described, icons, copies, auras, g_skill_adds.size());
 }
 
 void publish_item_records() {
