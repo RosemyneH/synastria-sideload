@@ -1211,6 +1211,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_map_filtered.inc"
 #include "natives/custom_get_profession_recipe_info.inc"
 #include "natives/custom_get_profession_recipe_reagents.inc"
+#include "natives/custom_get_profession_recipe_from_crafted.inc"
+#include "natives/custom_do_profession_recipe.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
 
@@ -1225,8 +1227,7 @@ const char* kStubs[] = {
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
-    "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeFromCraftedItem",
-    "Custom_DoProfessionRecipe",
+    "Custom_GetProfessionRecipes",
     "Custom_QueueEventEx",
 };
 
@@ -1503,6 +1504,8 @@ void register_natives() {
     register_cmc("Custom_GetMapFilteredResults", native_get_map_filtered);
     register_cmc("Custom_GetProfessionRecipeInfo", native_get_profession_recipe_info);
     register_cmc("Custom_GetProfessionRecipeReagents", native_get_profession_recipe_reagents);
+    register_cmc("Custom_GetProfessionRecipeFromCraftedItem", native_get_profession_recipe_from_crafted);
+    register_cmc("Custom_DoProfessionRecipe", native_do_profession_recipe);
     register_cmc("Custom_LockItem", native_lock_item);
     register_cmc("Custom_UnlockItem", native_unlock_item);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
