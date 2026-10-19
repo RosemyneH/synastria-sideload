@@ -1207,6 +1207,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_item_id_from_name.inc"
 #include "natives/custom_unregister_use_container_item.inc"
 #include "natives/custom_get_loot_filter_rule.inc"
+#include "natives/custom_set_loot_filter.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
@@ -1223,7 +1224,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 
 const char* kStubs[] = {
     "Custom_GetLootFilterRuleEntry",
-    "Custom_SetLootFilter", "Custom_SetLootFilterRule", "Custom_SetLootFilterRuleEntry",
+    "Custom_SetLootFilterRule", "Custom_SetLootFilterRuleEntry",
     "Custom_SetLootFilterOptions", "Custom_SetLootFilterRuleEnabled", "Custom_LootFilterResetToDefault",
     "Custom_LootFilterExport", "Custom_LootFilterImport", "Custom_LootFilterExportRule", "Custom_LootFilterImportRule",
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
@@ -1496,6 +1497,7 @@ void register_natives() {
     register_cmc("Custom_Internal_SetResultFromUseContainerItem", native_set_result_use_container_item);
     register_cmc("Custom_GetLootFilter", native_get_loot_filter);
     register_cmc("Custom_GetLootFilterRule", native_get_loot_filter_rule);
+    register_cmc("Custom_SetLootFilter", native_set_loot_filter);
     register_cmc("Custom_GetItemVars", native_get_item_vars);
     register_cmc("Custom_HasAcquiredItem", native_has_acquired_item);
     register_cmc("Custom_UnregisterForUseContainerItem", native_unregister_use_container_item);
