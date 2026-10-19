@@ -618,9 +618,10 @@ const char* db_record_string(const char* symbol, int id, int name_offset) {
     int32_t max_id = 0;
     int32_t min_id = 0;
     void** by_id = nullptr;
-    memcpy(&max_id, table + 0x0c, 4);
-    memcpy(&min_id, table + 0x10, 4);
-    memcpy(&by_id, table + 0x20, sizeof(by_id));
+    // ʕ •ᴥ•ʔ✿ 64-bit WowClientDB: max at +0x10, min at +0x14, id index at +0x30. ✿ ʕ •ᴥ•ʔ
+    memcpy(&max_id, table + 0x10, 4);
+    memcpy(&min_id, table + 0x14, 4);
+    memcpy(&by_id, table + 0x30, sizeof(by_id));
     if (!by_id || id < min_id || id > max_id) {
         return nullptr;
     }
@@ -637,9 +638,9 @@ int native_affix_name(void* state) {
     int id = arg_int(state, 1);
     const char* name = nullptr;
     if (id < 0) {
-        name = db_record_string("g_itemRandomSuffixDB", -id, 4);
+        name = db_record_string("g_itemRandomSuffixDB", -id, 8);
     } else if (id > 0) {
-        name = db_record_string("g_itemRandomPropertiesDB", id, 0x1c);
+        name = db_record_string("g_itemRandomPropertiesDB", id, 0x28);
     }
     if (!name) {
         g_push_nil(state);
