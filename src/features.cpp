@@ -1125,6 +1125,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
     log_line("WoWExtItemLoc.bin %zu bytes version %u names %zu", size, version, g_itemloc_names.size());
 }
 
+#include "natives/custom_get_current_zone.inc"
+
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
     "Custom_SetLootFilter", "Custom_SetLootFilterRule", "Custom_SetLootFilterRuleEntry",
@@ -1139,7 +1141,7 @@ const char* kStubs[] = {
     "ItemLocItemIsInZone", "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
     "Custom_GetPrequest", "Custom_ZoneContains",
-    "Custom_GetCurrentZone", "Custom_GetCurrentZoneOur", "Custom_GetQuestData",
+    "Custom_GetCurrentZoneOur", "Custom_GetQuestData",
     "Custom_GetQuestReq", "Custom_GetQuestCanAccept", "Custom_GetQuestCompleted",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
     "Custom_IsItemSoulbound", "Custom_GetItemCount", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
@@ -1372,6 +1374,7 @@ void register_natives() {
     register_cmc("SynastriaSafeInvoke", native_safe_invoke);
     register_cmc("GetAffixNameCustom", native_affix_name);
     register_cmc("Custom_GetZoneName", native_empty);
+    register_cmc("Custom_GetCurrentZone", native_get_current_zone);
     register_cmc("Custom_GetQuestName", native_empty);
     register_cmc("Custom_GetSpellDesc", native_empty);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
