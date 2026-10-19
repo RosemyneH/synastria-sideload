@@ -5,14 +5,32 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
-#include <execinfo.h>
-#include <signal.h>
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#include <sys/mman.h>
+
+#if defined(_MSC_VER)
+#define strdup _strdup
+#endif
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <direct.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
+
+#if !defined(SYNASTRIA_EMBED)
+#include <execinfo.h>
+#include <signal.h>
+#include <sys/mman.h>
+#endif
+
+#ifdef SYNASTRIA_EMBED
+void syn_bind_client();
+#endif
 
 namespace {
 
@@ -230,6 +248,7 @@ void log_stderr(const char* fmt, ...) {
 
 int hook_process(void* self, uint32_t time, void* msg, int unused);
 
+#if !defined(SYNASTRIA_EMBED)
 void write_abs_jmp(uint8_t* at, void* dest) {
     at[0] = 0xFF;
     at[1] = 0x25;
@@ -284,6 +303,7 @@ bool patch_process(void* target) {
     g_process = reinterpret_cast<ProcessFn>(tramp);
     return true;
 }
+#endif
 
 bool can_send() {
     return g_ctor && g_put_u8 && g_put_u32 && g_finalize && g_dtor && (g_net_send || g_send);
@@ -507,6 +527,7 @@ void ensure_handler(void* net) {
     log_line("registered handler for opcode %#x on %p", kOpcode, g_net);
 }
 
+#if !defined(SYNASTRIA_EMBED)
 bool patch_character_cap() {
     void* target = nullptr;
     if (!syn_resolve("_ZN15RealmConnection14HandleCharEnumEjjP10CDataStore", &target)) {
@@ -541,6 +562,7 @@ bool patch_character_cap() {
     log_stderr("synastria: character list cap %u", kCharacterCap);
     return true;
 }
+#endif
 
 void prepare_login_lua() {
     if (!g_cache.lua) {
@@ -624,7 +646,7 @@ void ensure_lua() {
     }
 }
 
-int hook_process(void* self, uint32_t time, void* msg, int unused) {
+extern "C" void synastria_enter_process(void* self, void* msg) {
     static int entries = 0;
     if (entries++ == 0) {
         log_line("hook entered");
@@ -635,10 +657,20 @@ int hook_process(void* self, uint32_t time, void* msg, int unused) {
             syn_features_world();
         }
     }
-    int result = g_process(self, time, msg, unused);
+}
+
+extern "C" void synastria_leave_process() {
     --g_depth;
+}
+
+#if !defined(SYNASTRIA_EMBED)
+int hook_process(void* self, uint32_t time, void* msg, int unused) {
+    synastria_enter_process(self, msg);
+    int result = g_process(self, time, msg, unused);
+    synastria_leave_process();
     return result;
 }
+#endif
 
 bool bind_symbol(const char* name, void** slot) {
     void* addr = nullptr;
@@ -674,16 +706,7 @@ bool resolve_all() {
         && bind_symbol("lua_tolstring", reinterpret_cast<void**>(&g_lua_tolstring));
 }
 
-constexpr uint8_t kHandleData[] = {
-    0x41, 0x57,
-    0x41, 0x89, 0xf7,
-    0x41, 0x56,
-    0x53,
-    0x48, 0x89, 0xfb,
-    0x48, 0x83, 0xec, 0x50,
-};
-
-int hook_handle_data(void* self, uint32_t time, void* data, int size) {
+extern "C" void synastria_on_handle_data(void* self, void* data, int size) {
     static int entries = 0;
     if (entries++ == 0) {
         log_line("handle data entered");
@@ -696,6 +719,20 @@ int hook_handle_data(void* self, uint32_t time, void* data, int size) {
             syn_features_world();
         }
     }
+}
+
+#if !defined(SYNASTRIA_EMBED)
+constexpr uint8_t kHandleData[] = {
+    0x41, 0x57,
+    0x41, 0x89, 0xf7,
+    0x41, 0x56,
+    0x53,
+    0x48, 0x89, 0xfb,
+    0x48, 0x83, 0xec, 0x50,
+};
+
+int hook_handle_data(void* self, uint32_t time, void* data, int size) {
+    synastria_on_handle_data(self, data, size);
     return g_handle_data(self, time, data, size);
 }
 
@@ -748,7 +785,10 @@ void syn_segv(int sig, siginfo_t* info, void* ctx) {
     raise(sig);
 }
 
+#endif
+
 void install_fault_trace() {
+#if !defined(SYNASTRIA_EMBED)
     static bool armed = false;
     if (armed) {
         return;
@@ -760,6 +800,7 @@ void install_fault_trace() {
     if (sigaction(SIGSEGV, &next, &g_prev_segv) == 0) {
         armed = true;
     }
+#endif
 }
 
 void pump_main(bool in_game) {
@@ -808,13 +849,22 @@ void pump_main(bool in_game) {
     g_main_depth--;
 }
 
-int hook_glue_idle(const void* data, void* param) {
+extern "C" void synastria_on_glue_idle() {
     pump_main(false);
+}
+
+extern "C" void synastria_on_game_idle() {
+    pump_main(true);
+}
+
+#if !defined(SYNASTRIA_EMBED)
+int hook_glue_idle(const void* data, void* param) {
+    synastria_on_glue_idle();
     return g_glue_idle(data, param);
 }
 
 int hook_game_idle(const void* data, void* param) {
-    pump_main(true);
+    synastria_on_game_idle();
     return g_game_idle(data, param);
 }
 
@@ -891,6 +941,43 @@ void* hook_full_item(void* self, int id, void* guid, void* cb, void* user, bool 
     return g_full_item ? g_full_item(self, id, guid, cb, user, create) : nullptr;
 }
 
+using SkillLookupFn = const void* (*)(int, int, int);
+SkillLookupFn g_skill_lookup = nullptr;
+
+extern "C" const void* syn_skill_lookup(int race, int class_id, int skill_id) {
+    if (!g_skill_lookup) {
+        return nullptr;
+    }
+    const void* hit = g_skill_lookup(race, class_id, skill_id);
+    if (hit) {
+        return hit;
+    }
+    int count = syn_features_class_count();
+    for (int i = 0; i < count; ++i) {
+        int other = syn_features_class_id(i);
+        if (!other || other == class_id) {
+            continue;
+        }
+        hit = g_skill_lookup(race, other, skill_id);
+        if (hit) {
+            return hit;
+        }
+    }
+    return nullptr;
+}
+
+void hook_skill_lookup() {
+    void* target = nullptr;
+    if (!syn_resolve("_Z20SpellTableLookupInfoiii", &target)) {
+        log_line("missing SpellTableLookupInfo");
+        return;
+    }
+    void* tramp = detour(target, 16, reinterpret_cast<void*>(syn_skill_lookup), "spell skill lookup");
+    if (tramp) {
+        g_skill_lookup = reinterpret_cast<SkillLookupFn>(tramp);
+    }
+}
+
 void hook_item_records() {
     void* copies[24];
     int count = syn_resolve_each(
@@ -929,15 +1016,47 @@ void hook_item_records() {
     }
     log_line("item lookup hooks %d", hooked);
 }
+#endif
 
 const char* root_dir() {
     const char* env = getenv("SYNASTRIA_ROOT");
     if (env && env[0]) {
         return env;
     }
-    return "/home/emma/Games/Synastria";
+    static char dir[4096];
+    if (dir[0]) {
+        return dir;
+    }
+#if defined(_WIN32)
+    DWORD n = GetModuleFileNameA(nullptr, dir, sizeof(dir));
+    if (n == 0 || n >= sizeof(dir)) {
+        dir[0] = '.';
+        dir[1] = 0;
+        return dir;
+    }
+#else
+    ssize_t n = readlink("/proc/self/exe", dir, sizeof(dir) - 1);
+    if (n <= 0) {
+        dir[0] = '.';
+        dir[1] = 0;
+        return dir;
+    }
+    dir[n] = 0;
+#endif
+    char* slash = strrchr(dir, '/');
+#if defined(_WIN32)
+    char* back = strrchr(dir, '\\');
+    if (back && (!slash || back > slash)) {
+        slash = back;
+    }
+#endif
+    if (slash && slash != dir) {
+        *slash = 0;
+    }
+    return dir;
 }
 
+#if !defined(_WIN32)
 // ʕ •ᴥ•ʔ✿ Children such as zenity must not inherit the bridge. The client already has it loaded. ✿ ʕ •ᴥ•ʔ
 void drop_preload() {
     const char* preload = getenv("LD_PRELOAD");
@@ -964,6 +1083,7 @@ void drop_preload() {
         unsetenv("LD_PRELOAD");
     }
 }
+#endif
 
 void describe_cache() {
     log_line("WoWExt.bin %s %zu", g_cache.bin_ok ? "ok" : "bad", g_cache.bin_bytes);
@@ -976,8 +1096,10 @@ void describe_cache() {
 }
 
 void install() {
+#if !defined(_WIN32)
     drop_preload();
-
+#endif
+#if !defined(SYNASTRIA_EMBED)
     char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (n <= 0) {
@@ -989,11 +1111,16 @@ void install() {
     if (strncmp(base, "WowClient", 9) != 0) {
         return;
     }
+#endif
 
     const char* root = root_dir();
     char logs[1024];
     snprintf(logs, sizeof(logs), "%s/Logs", root);
+#if defined(_WIN32)
+    _mkdir(logs);
+#else
     mkdir(logs, 0755);
+#endif
 
     snprintf(logs, sizeof(logs), "%s/Logs/synastria-sideload.log", root);
     g_log = fopen(logs, "w");
@@ -1003,13 +1130,22 @@ void install() {
     syn_features_prepare(root);
     prepare_login_lua();
     describe_cache();
+#if defined(_WIN32)
+    log_line("pid %lu", GetCurrentProcessId());
+#else
     log_line("pid %d", getpid());
     log_stderr("synastria: cache %s pid %d", (g_cache.bin_ok && g_cache.bin2_ok && g_cache.lua_ok) ? "ok" : "incomplete", getpid());
+#endif
 
+#ifdef SYNASTRIA_EMBED
+    syn_bind_client();
+#endif
     if (!resolve_all()) {
         return;
     }
+#if !defined(SYNASTRIA_EMBED)
     hook_item_records();
+    hook_skill_lookup();
     void* process = nullptr;
     if (!syn_resolve("_ZN9NetClient14ProcessMessageEjP10CDataStorei", &process)) {
         log_line("missing ProcessMessage");
@@ -1034,6 +1170,10 @@ void install() {
     hook_idle("_ZN8CGGameUI4IdleEPKvPv", kGameIdle, sizeof(kGameIdle),
               reinterpret_cast<void*>(hook_game_idle), &g_game_idle, "CGGameUI::Idle");
     patch_character_cap();
+#else
+    log_line("embedded bridge");
+    log_stderr("synastria: embedded bridge");
+#endif
 }
 
 }  // namespace
@@ -1042,6 +1182,11 @@ void syn_net_notify(uint32_t a, uint32_t b, const char* text) {
     syn_net_notify_impl(a, b, text);
 }
 
+#if defined(_MSC_VER)
+static struct SynLoad {
+    SynLoad() { install(); }
+    ~SynLoad() {
+#else
 __attribute__((constructor))
 static void syn_construct() {
     install();
@@ -1049,6 +1194,7 @@ static void syn_construct() {
 
 __attribute__((destructor))
 static void syn_destruct() {
+#endif
     if (g_log) {
         fclose(g_log);
         g_log = nullptr;
@@ -1057,3 +1203,6 @@ static void syn_destruct() {
     g_login_lua = nullptr;
     syn_free_cache(&g_cache);
 }
+#if defined(_MSC_VER)
+} g_syn_load;
+#endif

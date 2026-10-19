@@ -11,6 +11,8 @@ void syn_features_before();
 void syn_features_reset();
 void syn_features_after();
 bool syn_features_scripts_done();
+int syn_features_class_count();
+int syn_features_class_id(int index);
 void syn_features_world();
 void syn_features_harvest();
 void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size);

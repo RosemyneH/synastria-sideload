@@ -18,6 +18,25 @@
 #include <string>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <cmath>
+#include <intrin.h>
+inline int syn_ctzll(unsigned long long value) {
+    unsigned long index = 0;
+    _BitScanForward64(&index, value);
+    return static_cast<int>(index);
+}
+inline int syn_clz(unsigned int value) {
+    unsigned long index = 0;
+    _BitScanReverse(&index, value);
+    return 31 - static_cast<int>(index);
+}
+#define __builtin_ctzll syn_ctzll
+#define __builtin_clz syn_clz
+#define __builtin_popcount __popcnt
+#define __builtin_round std::round
+#endif
+
 namespace {
 
 constexpr uint32_t kMagic = 0x2838C53Au;
@@ -2232,8 +2251,40 @@ SpellTable& spell_table() {
     return table;
 }
 
-uint8_t* spell_plain(SpellTable& table, int id) {
+bool spell_known(SpellTable& table, int id) {
     if (!table.by_id || id < table.min_id || id > table.max_id) {
+        return false;
+    }
+    if (table.plain.find(id) != table.plain.end()) {
+        return true;
+    }
+    return table.by_id[id - table.min_id] != nullptr;
+}
+
+void spell_grow(SpellTable& table, int id) {
+    if (!table.base || id <= table.max_id || id < table.min_id) {
+        return;
+    }
+    size_t grown_n = static_cast<size_t>(id - table.min_id + 1);
+    size_t old_n = table.max_id >= table.min_id ? static_cast<size_t>(table.max_id - table.min_id + 1) : 0;
+    uint8_t** grown = new uint8_t*[grown_n]();
+    if (table.by_id && old_n) {
+        memcpy(grown, table.by_id, old_n * sizeof(uint8_t*));
+    }
+    table.by_id = grown;
+    memcpy(table.base + 0x30, &table.by_id, sizeof(table.by_id));
+    memcpy(table.base + 0x10, &id, 4);
+    table.max_id = id;
+}
+
+uint8_t* spell_plain(SpellTable& table, int id) {
+    if (!table.by_id || id < table.min_id) {
+        return nullptr;
+    }
+    if (id > table.max_id) {
+        spell_grow(table, id);
+    }
+    if (id > table.max_id) {
         return nullptr;
     }
     auto have = table.plain.find(id);
@@ -2241,10 +2292,15 @@ uint8_t* spell_plain(SpellTable& table, int id) {
         return have->second.data();
     }
     uint8_t* raw = table.by_id[id - table.min_id];
-    if (!raw) {
-        return nullptr;
-    }
     std::vector<uint8_t> row(kSpellBytes);
+    if (!raw) {
+        int32_t self = id;
+        int32_t icon = 1;
+        memcpy(row.data(), &self, 4);
+        memcpy(row.data() + 0x214, &icon, 4);
+        auto stored = table.plain.emplace(id, std::move(row));
+        return stored.first->second.data();
+    }
     if (table.compress) {
         if (!table.decompress) {
             return nullptr;
@@ -2378,15 +2434,16 @@ void publish_spell_records() {
                 && k + 6 + span <= plain_size && spell_text_ok(cursor + k + 6, span)) {
                 std::string text(reinterpret_cast<const char*>(cursor + k + 6), span);
                 int family = spell_family(text);
-                if (text.find('$') == std::string::npos) {
+                bool fresh = text.find('$') == std::string::npos && !spell_known(table, static_cast<int>(spell));
+                if (fresh) {
                     spell_set_name(table, static_cast<int>(spell), text.c_str(), span);
+                    if (family) {
+                        spell_set_family(table, static_cast<int>(spell), family);
+                    }
                     ++names;
                 }
-                if (family) {
-                    spell_set_family(table, static_cast<int>(spell), family);
-                }
                 k += 6 + span;
-                if (family && k + 3 <= plain_size) {
+                if (fresh && family && k + 3 <= plain_size) {
                     uint16_t head = 0;
                     memcpy(&head, cursor + k, 2);
                     uint8_t many = cursor[k + 2];
@@ -2618,6 +2675,17 @@ void syn_features_harvest() {
 
 bool syn_features_scripts_done() {
     return g_scripts_ready;
+}
+
+int syn_features_class_count() {
+    return g_class_count;
+}
+
+int syn_features_class_id(int index) {
+    if (index < 0 || index >= g_class_count) {
+        return 0;
+    }
+    return g_classes[index].id;
 }
 
 void syn_features_after() {
