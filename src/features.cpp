@@ -56,7 +56,6 @@ struct CacheRecord {
 };
 
 std::vector<CacheRecord> g_cache_records;
-std::vector<std::string> g_item_name_list;
 std::vector<std::string> g_obj_names;
 std::vector<std::string> g_itemloc_names;
 int g_obj_version = 0;
@@ -411,10 +410,125 @@ int native_true(void* state) {
     return 1;
 }
 
+struct ItemRow {
+    bool on = false;
+    uint8_t klass = 0;
+    uint8_t quality = 0;
+    uint8_t sub = 0;
+    uint8_t inv = 0;
+    uint32_t display = 0;
+    uint32_t level = 0;
+    std::string name;
+};
+
+std::vector<ItemRow> g_items;
+std::vector<uint8_t*> g_item_blobs;
+char g_root[1024] = {};
+bool g_items_loaded = false;
+
+using ArtFn = const char* (*)(int);
+ArtFn g_art = nullptr;
+
+const char* item_class_name(int klass) {
+    static const char* names[] = {
+        "Consumable", "Container", "Weapon", "Gem", "Armor", "Reagent",
+        "Projectile", "Trade Goods", "", "Recipe", "", "Quiver",
+        "Quest", "Key", "", "Miscellaneous", "Glyph",
+    };
+    if (klass < 0 || klass >= static_cast<int>(sizeof(names) / sizeof(names[0]))) {
+        return "";
+    }
+    return names[klass];
+}
+
+const char* item_subclass_name(int klass, int sub) {
+    if (klass == 2) {
+        static const char* names[] = {
+            "Axe", "Axe", "Bow", "Gun", "Mace", "Mace", "Polearm", "Sword", "Sword",
+            "", "Staff", "", "", "Fist Weapon", "", "Dagger", "Thrown", "", "Crossbow", "Wand", "Fishing Pole",
+        };
+        if (sub >= 0 && sub < static_cast<int>(sizeof(names) / sizeof(names[0])) && names[sub][0]) {
+            return names[sub];
+        }
+    }
+    if (klass == 4) {
+        static const char* names[] = {"Miscellaneous", "Cloth", "Leather", "Mail", "Plate", "", "Shield"};
+        if (sub >= 0 && sub < static_cast<int>(sizeof(names) / sizeof(names[0])) && names[sub][0]) {
+            return names[sub];
+        }
+    }
+    return "";
+}
+
+const char* inv_name(int inv) {
+    static const char* names[] = {
+        "", "INVTYPE_HEAD", "INVTYPE_NECK", "INVTYPE_SHOULDER", "INVTYPE_BODY",
+        "INVTYPE_CHEST", "INVTYPE_WAIST", "INVTYPE_LEGS", "INVTYPE_FEET", "INVTYPE_WRIST",
+        "INVTYPE_HAND", "INVTYPE_FINGER", "INVTYPE_TRINKET", "INVTYPE_WEAPON", "INVTYPE_SHIELD",
+        "INVTYPE_RANGED", "INVTYPE_CLOAK", "INVTYPE_2HWEAPON", "INVTYPE_BAG", "INVTYPE_TABARD",
+        "INVTYPE_ROBE", "INVTYPE_WEAPONMAINHAND", "INVTYPE_WEAPONOFFHAND", "INVTYPE_HOLDABLE",
+        "INVTYPE_AMMO", "INVTYPE_THROWN", "INVTYPE_RANGEDRIGHT", "INVTYPE_QUIVER", "INVTYPE_RELIC",
+    };
+    if (inv < 0 || inv >= static_cast<int>(sizeof(names) / sizeof(names[0]))) {
+        return "";
+    }
+    return names[inv];
+}
+
+const char* quality_color(int quality) {
+    static const char* colors[] = {
+        "9d9d9d", "ffffff", "1eff00", "0070dd", "a335ee", "ff8000", "e6cc80", "00ccff",
+    };
+    if (quality < 0 || quality > 7) {
+        quality = 1;
+    }
+    return colors[quality];
+}
+
+const char* item_icon(int display) {
+    if (display <= 0) {
+        return nullptr;
+    }
+    if (!g_art) {
+        syn_resolve("_ZN8CGItem_C15GetInventoryArtEi", reinterpret_cast<void**>(&g_art));
+    }
+    if (!g_art) {
+        return nullptr;
+    }
+    const char* path = g_art(display);
+    if (!path || !path[0]) {
+        return nullptr;
+    }
+    return path;
+}
+
 int native_item_info(void* state) {
-    g_push_nil(state);
-    (void)g_item_name_list;
-    return 1;
+    int id = arg_int(state, 1);
+    if (id < 0 || id >= static_cast<int>(g_items.size()) || !g_items[static_cast<size_t>(id)].on) {
+        g_push_nil(state);
+        return 1;
+    }
+    const ItemRow& row = g_items[static_cast<size_t>(id)];
+    char link[320];
+    snprintf(link, sizeof(link), "|cff%s|Hitem:%d:0:0:0:0:0:0:0:80|h[%s]|h|r",
+             quality_color(row.quality), id, row.name.c_str());
+    g_push_str(state, row.name.c_str());
+    g_push_str(state, link);
+    g_push_num(state, row.quality);
+    g_push_num(state, row.level);
+    g_push_num(state, 0);
+    g_push_str(state, item_class_name(row.klass));
+    g_push_str(state, item_subclass_name(row.klass, row.sub));
+    g_push_num(state, 1);
+    g_push_str(state, inv_name(row.inv));
+    const char* icon = item_icon(static_cast<int>(row.display));
+    if (icon) {
+        g_push_str(state, icon);
+    } else {
+        g_push_nil(state);
+    }
+    g_push_num(state, 0);
+    return 11;
 }
 
 int native_item_id_from_name(void* state) {
@@ -470,6 +584,41 @@ uint8_t* read_alloc(const char* path, size_t* size) {
     return buf;
 }
 
+struct BinReader {
+    const uint8_t* data;
+    size_t size;
+    size_t off = 0;
+    bool ok = true;
+
+    bool take(void* dst, size_t n) {
+        if (!ok || off + n > size) {
+            ok = false;
+            return false;
+        }
+        memcpy(dst, data + off, n);
+        off += n;
+        return true;
+    }
+
+    uint8_t u8() {
+        uint8_t value = 0;
+        take(&value, 1);
+        return value;
+    }
+
+    uint16_t u16() {
+        uint16_t value = 0;
+        take(&value, 2);
+        return value;
+    }
+
+    uint32_t u32() {
+        uint32_t value = 0;
+        take(&value, 4);
+        return value;
+    }
+};
+
 void load_item_db(const uint8_t* data, size_t size) {
     log_line("WoWExt2.bin start %zu", size);
     if (size < 8) {
@@ -481,32 +630,73 @@ void load_item_db(const uint8_t* data, size_t size) {
         log_line("WoWExt2.bin version %u rejected", version);
         return;
     }
-    g_item_name_list.clear();
-    int named = 0;
-    for (size_t i = 4; i + 3 < size; ++i) {
-        if (data[i] != 0x3b) {
-            continue;
-        }
-        uint8_t length = data[i + 2];
-        if (length == 0 || length > 80 || i + 3 + length > size) {
-            continue;
-        }
-        bool printable = true;
-        for (uint8_t n = 0; n < length; ++n) {
-            unsigned char c = data[i + 3 + n];
-            if (c < 32 || c >= 127) {
-                printable = false;
-                break;
-            }
-        }
-        if (!printable) {
-            continue;
-        }
-        g_item_name_list.emplace_back(reinterpret_cast<const char*>(data + i + 3), length);
-        ++named;
-        i += 2 + length;
+
+    for (uint8_t* blob : g_item_blobs) {
+        free(blob);
     }
-    log_line("WoWExt2.bin %zu bytes version %u named items %d", size, version, named);
+    g_item_blobs.clear();
+    g_items.assign(65536, {});
+
+    BinReader in{data, size, 4, true};
+    int named = 0;
+    for (int id = 0; id < 65536 && in.ok; ++id) {
+        uint8_t head = in.u8();
+        if (!in.ok || (head & 1) == 0) {
+            continue;
+        }
+        uint8_t mask = in.u8();
+        uint8_t length = in.u8();
+        if (!in.ok || in.off + length > in.size) {
+            in.ok = false;
+            break;
+        }
+        ItemRow row;
+        row.on = true;
+        row.name.assign(reinterpret_cast<const char*>(in.data + in.off), length);
+        in.off += length;
+        row.klass = in.u8();
+        row.quality = in.u8();
+        row.sub = (head & 0x02) ? in.u8() : 0;
+        if (head & 0x04) {
+            in.u8();
+        }
+        if (head & 0x08) {
+            in.u8();
+        }
+        row.inv = (head & 0x10) ? in.u8() : 0;
+        if (head & 0x20) {
+            in.u8();
+        }
+        if (head & 0x40) {
+            in.u16();
+        }
+        if (head & 0x80) {
+            in.u16();
+        }
+        row.level = (mask & 0x01) ? in.u8() : in.u16();
+        if (mask & 0x02) {
+            in.u8();
+        }
+        if (mask & 0x04) {
+            in.u8();
+        }
+        if (mask & 0x08) {
+            in.u8();
+            in.u32();
+        }
+        row.display = (mask & 0x10) ? in.u16() : in.u32();
+        in.u32();
+        if (mask & 0x20) {
+            in.u32();
+            in.u32();
+        }
+        if (!in.ok) {
+            break;
+        }
+        g_items[static_cast<size_t>(id)] = std::move(row);
+        ++named;
+    }
+    log_line("WoWExt2.bin %zu bytes version %u items %d offset %zu", size, version, named, in.off);
 }
 
 void load_obj_loc(const uint8_t* data, size_t size) {
@@ -819,6 +1009,13 @@ void syn_features_set_log(FILE* log) {
     g_log = log;
 }
 
+void syn_features_prepare(const char* root) {
+    if (!root) {
+        return;
+    }
+    snprintf(g_root, sizeof(g_root), "%s", root);
+}
+
 void syn_features_load(const char* root) {
     char path[1024];
     try {
@@ -859,10 +1056,46 @@ void syn_features_load(const char* root) {
 }
 
 void syn_features_before() {
+    // ʕ •ᴥ•ʔ✿ The constructor runs before these vectors exist, so the file load waits for idle. ✿ ʕ •ᴥ•ʔ
+    if (!g_items_loaded && g_root[0]) {
+        g_items_loaded = true;
+        syn_features_load(g_root);
+    }
     if (!g_register && !bind_lua()) {
         return;
     }
     register_natives();
+}
+
+void* syn_features_item_record(int id) {
+    if (id < 0 || id >= static_cast<int>(g_items.size()) || !g_items[static_cast<size_t>(id)].on) {
+        return nullptr;
+    }
+    if (g_item_blobs.size() != g_items.size()) {
+        g_item_blobs.assign(g_items.size(), nullptr);
+    }
+    uint8_t*& blob = g_item_blobs[static_cast<size_t>(id)];
+    if (blob) {
+        return blob;
+    }
+    const ItemRow& row = g_items[static_cast<size_t>(id)];
+    blob = static_cast<uint8_t*>(calloc(1, 0x280));
+    if (!blob) {
+        return nullptr;
+    }
+    auto put32 = [&](int at, uint32_t value) {
+        memcpy(blob + at, &value, 4);
+    };
+    put32(0x08, row.klass);
+    put32(0x0c, row.sub);
+    put32(0x14, row.display);
+    put32(0x18, row.quality);
+    put32(0x2c, row.inv);
+    put32(0x38, row.level);
+    put32(0x60, 1);
+    const char* name = row.name.c_str();
+    memcpy(blob + 0x200, &name, sizeof(name));
+    return blob;
 }
 
 void syn_features_reset() {

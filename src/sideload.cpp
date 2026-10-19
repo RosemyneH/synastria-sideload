@@ -706,6 +706,109 @@ void hook_idle(const char* symbol, const uint8_t* prefix, size_t bytes, void* ho
     }
 }
 
+constexpr uint8_t kItemLookup[] = {
+    0x48, 0x83, 0xec, 0x28,
+    0x48, 0x89, 0x6c, 0x24, 0x18,
+    0x64, 0x48, 0x8b, 0x2c, 0x25, 0x28, 0x00, 0x00, 0x00,
+    0x48, 0x89, 0x6c, 0x24, 0x08,
+    0x89, 0xfd,
+};
+
+constexpr uint8_t kFullItem[] = {
+    0x48, 0x81, 0xec, 0x88, 0x00, 0x00, 0x00,
+    0x48, 0x89, 0x5c, 0x24, 0x58,
+    0x48, 0x89, 0xcb,
+};
+
+struct ItemSlot {
+    void* (*original)(int);
+};
+
+ItemSlot g_item_slots[24]{};
+
+extern "C" void* syn_item_hook(ItemSlot* slot, int id) {
+    void* found = slot && slot->original ? slot->original(id) : nullptr;
+    if (found) {
+        return found;
+    }
+    return syn_features_item_record(id);
+}
+
+uint8_t* emit_item_stub(uint8_t* at, ItemSlot* slot) {
+    auto imm = [&](uint64_t value) {
+        memcpy(at, &value, 8);
+        at += 8;
+    };
+    *at++ = 0x57;
+    *at++ = 0x48;
+    *at++ = 0xbf;
+    imm(reinterpret_cast<uint64_t>(slot));
+    *at++ = 0x8b;
+    *at++ = 0x34;
+    *at++ = 0x24;
+    *at++ = 0x48;
+    *at++ = 0xb8;
+    imm(reinterpret_cast<uint64_t>(&syn_item_hook));
+    *at++ = 0xff;
+    *at++ = 0xd0;
+    *at++ = 0x48;
+    *at++ = 0x83;
+    *at++ = 0xc4;
+    *at++ = 0x08;
+    *at++ = 0xc3;
+    return at;
+}
+
+using FullItemFn = void* (*)(void*, int, void*, void*, void*, bool);
+FullItemFn g_full_item = nullptr;
+
+void* hook_full_item(void* self, int id, void* guid, void* cb, void* user, bool create) {
+    void* found = g_full_item ? g_full_item(self, id, guid, cb, user, create) : nullptr;
+    if (found) {
+        return found;
+    }
+    return syn_features_item_record(id);
+}
+
+void hook_item_records() {
+    void* copies[24];
+    int count = syn_resolve_each(
+        "_ZN7DBCacheI11ItemStats_Ci11HASHKEY_INTE9GetRecordEiRK7WOWGUIDPFviS5_PvbES6_b.constprop.0",
+        copies, 24);
+    long page = sysconf(_SC_PAGESIZE);
+    uint8_t* stub = static_cast<uint8_t*>(mmap(nullptr, static_cast<size_t>(page), PROT_READ | PROT_WRITE | PROT_EXEC,
+                                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (stub == MAP_FAILED) {
+        log_line("item lookup stub alloc failed");
+        return;
+    }
+    int hooked = 0;
+    for (int i = 0; i < count && hooked < 24; ++i) {
+        auto* code = static_cast<uint8_t*>(copies[i]);
+        if (memcmp(code, kItemLookup, sizeof(kItemLookup)) != 0) {
+            continue;
+        }
+        uint8_t* next = emit_item_stub(stub, &g_item_slots[hooked]);
+        void* tramp = detour(copies[i], 18, stub, "item lookup");
+        if (!tramp) {
+            continue;
+        }
+        g_item_slots[hooked].original = reinterpret_cast<void* (*)(int)>(tramp);
+        stub = next;
+        ++hooked;
+    }
+    void* full = nullptr;
+    if (syn_resolve("_ZN7DBCacheI11ItemStats_Ci11HASHKEY_INTE9GetRecordEiRK7WOWGUIDPFviS5_PvbES6_b", &full)
+        && memcmp(full, kFullItem, sizeof(kFullItem)) == 0) {
+        void* tramp = detour(full, sizeof(kFullItem), reinterpret_cast<void*>(hook_full_item), "item lookup full");
+        if (tramp) {
+            g_full_item = reinterpret_cast<FullItemFn>(tramp);
+            ++hooked;
+        }
+    }
+    log_line("item lookup hooks %d", hooked);
+}
+
 const char* root_dir() {
     const char* env = getenv("SYNASTRIA_ROOT");
     if (env && env[0]) {
@@ -776,7 +879,7 @@ void install() {
     syn_features_set_log(g_log);
 
     syn_load_cache(root, &g_cache);
-    syn_features_load(root);
+    syn_features_prepare(root);
     prepare_login_lua();
     describe_cache();
     log_line("pid %d", getpid());
@@ -785,6 +888,7 @@ void install() {
     if (!resolve_all()) {
         return;
     }
+    hook_item_records();
     void* process = nullptr;
     if (!syn_resolve("_ZN9NetClient14ProcessMessageEjP10CDataStorei", &process)) {
         log_line("missing ProcessMessage");

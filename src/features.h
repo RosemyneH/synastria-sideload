@@ -4,7 +4,9 @@
 #include <cstdio>
 
 void syn_features_set_log(FILE* log);
+void syn_features_prepare(const char* root);
 void syn_features_load(const char* root);
+void* syn_features_item_record(int id);
 void syn_features_before();
 void syn_features_reset();
 void syn_features_after();

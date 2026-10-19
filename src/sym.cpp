@@ -44,33 +44,32 @@ uint64_t load_bias() {
 
 }  // namespace
 
-bool syn_resolve(const char* name, void** out) {
-    *out = nullptr;
+int syn_resolve_each(const char* name, void** out, int cap) {
+    if (!out || cap <= 0) {
+        return 0;
+    }
 
     int fd = open("/proc/self/exe", O_RDONLY);
     if (fd < 0) {
-        return false;
+        return 0;
     }
 
     struct stat st;
     if (fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(sizeof(Elf64_Ehdr))) {
         close(fd);
-        return false;
+        return 0;
     }
 
     void* map = mmap(nullptr, static_cast<size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
     if (map == MAP_FAILED) {
-        return false;
+        return 0;
     }
 
+    int found = 0;
     auto* ehdr = static_cast<Elf64_Ehdr*>(map);
-    bool ok = false;
     if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) == 0 && ehdr->e_ident[EI_CLASS] == ELFCLASS64) {
         auto* shdrs = reinterpret_cast<Elf64_Shdr*>(static_cast<char*>(map) + ehdr->e_shoff);
-        const char* shstr = static_cast<char*>(map) + shdrs[ehdr->e_shstrndx].sh_offset;
-        (void)shstr;
-
         uint64_t bias = load_bias();
         uint64_t first_vaddr = 0;
         auto* phdrs = reinterpret_cast<Elf64_Phdr*>(static_cast<char*>(map) + ehdr->e_phoff);
@@ -81,27 +80,30 @@ bool syn_resolve(const char* name, void** out) {
             }
         }
 
-        for (int i = 0; i < ehdr->e_shnum && !ok; ++i) {
+        for (int i = 0; i < ehdr->e_shnum && found < cap; ++i) {
             if (shdrs[i].sh_type != SHT_SYMTAB) {
                 continue;
             }
             auto* syms = reinterpret_cast<Elf64_Sym*>(static_cast<char*>(map) + shdrs[i].sh_offset);
             const char* str = static_cast<char*>(map) + shdrs[shdrs[i].sh_link].sh_offset;
             size_t count = shdrs[i].sh_size / sizeof(Elf64_Sym);
-            for (size_t s = 0; s < count; ++s) {
+            for (size_t s = 0; s < count && found < cap; ++s) {
                 if (syms[s].st_shndx == SHN_UNDEF || syms[s].st_name == 0) {
                     continue;
                 }
                 if (strcmp(str + syms[s].st_name, name) != 0) {
                     continue;
                 }
-                *out = reinterpret_cast<void*>(bias - first_vaddr + syms[s].st_value);
-                ok = true;
-                break;
+                out[found++] = reinterpret_cast<void*>(bias - first_vaddr + syms[s].st_value);
             }
         }
     }
 
     munmap(map, static_cast<size_t>(st.st_size));
-    return ok;
+    return found;
+}
+
+bool syn_resolve(const char* name, void** out) {
+    *out = nullptr;
+    return syn_resolve_each(name, out, 1) == 1;
 }
