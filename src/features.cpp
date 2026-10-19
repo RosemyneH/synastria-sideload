@@ -1117,6 +1117,8 @@ void load_itemloc_item_in_zone(const uint8_t* data, size_t size);
 void load_itemloc_item_in_multi_zone(const uint8_t* data, size_t size);
 void load_itemloc_source_in_zone(const uint8_t* data, size_t size);
 void load_itemloc_fixup_obj_id(const uint8_t* data, size_t size);
+void load_itemloc_all_objs_in_zone(const uint8_t* data, size_t size);
+void load_itemloc_sources_compacted(const uint8_t* data, size_t size);
 void load_have_any_reward(const uint8_t* data, size_t size);
 
 void load_item_loc(const uint8_t* data, size_t size) {
@@ -1138,6 +1140,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
     load_itemloc_item_in_multi_zone(data, size);
     load_itemloc_source_in_zone(data, size);
     load_itemloc_fixup_obj_id(data, size);
+    load_itemloc_all_objs_in_zone(data, size);
+    load_itemloc_sources_compacted(data, size);
     load_have_any_reward(data, size);
 }
 
@@ -1163,9 +1167,14 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_highest_spell.inc"
 #include "natives/custom_get_spell_effect.inc"
 #include "natives/custom_get_item_count.inc"
+#include "natives/custom_is_item_soulbound.inc"
+#include "natives/custom_get_merchant_item.inc"
 #include "natives/custom_get_quest_req.inc"
 #include "natives/custom_get_prequest.inc"
 #include "natives/custom_get_quest_can_accept.inc"
+#include "natives/itemloc_all_objs_in_zone.inc"
+#include "natives/itemloc_sources_compacted.inc"
+#include "natives/custom_get_cursor_item.inc"
 #include "natives/itemloc_item_in_zone.inc"
 #include "natives/itemloc_item_in_multi_zone.inc"
 #include "natives/itemloc_source_in_zone.inc"
@@ -1181,9 +1190,8 @@ const char* kStubs[] = {
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
     "ItemLocSetObjSort",
     "ItemLocGetAllItemsInZone",
-    "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
-    "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
-    "Custom_IsItemSoulbound", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
+    "Custom_IsContainerItemSoulbound",
+    "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
     "Custom_GetItemLinkBySlot", "Custom_IsPlayerNear",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
@@ -1429,12 +1437,17 @@ void register_natives() {
     register_cmc("Custom_GetQuestCompleted", native_get_quest_completed);
     register_cmc("ItemLocGetSourceCount", native_itemloc_source_count);
     register_cmc("Custom_GetItemCount", native_get_item_count);
+    register_cmc("Custom_IsItemSoulbound", native_is_item_soulbound);
     register_cmc("Custom_GetQuestReq", native_get_quest_req);
     register_cmc("Custom_GetPrequest", native_get_prequest);
     register_cmc("Custom_GetQuestCanAccept", native_get_quest_can_accept);
     register_cmc("ItemLocItemIsInZone", native_itemloc_item_in_zone);
     register_cmc("ItemLocItemIsInMultiZone", native_itemloc_item_in_multi_zone);
     register_cmc("ItemLocSourceIsInZone", native_itemloc_source_in_zone);
+    register_cmc("ItemLocGetAllObjsInZone", native_itemloc_all_objs_in_zone);
+    register_cmc("ItemLocGetSourcesCompacted", native_itemloc_sources_compacted);
+    register_cmc("Custom_GetCurrentCursorItem", native_get_cursor_item);
+    register_cmc("Custom_GetMerchantItem", native_get_merchant_item);
     register_cmc("Custom_GetSpellDesc", native_get_spell_desc);
     register_cmc("Custom_GetSpellCooldown", native_get_spell_cooldown);
     register_cmc("Custom_GetHighestLearnedSpell", native_get_highest_spell);
