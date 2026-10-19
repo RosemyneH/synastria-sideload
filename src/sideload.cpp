@@ -288,6 +288,9 @@ bool can_send() {
     return g_ctor && g_put_u8 && g_put_u32 && g_finalize && g_dtor && (g_net_send || g_send);
 }
 
+uint32_t g_sync_stamp = 0;
+bool g_sync_have = false;
+
 void send_sync_ack(uint32_t stamp) {
     if (!can_send()) {
         return;
@@ -459,8 +462,15 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
     if (cmd == 21 && rest && left >= 4) {
         uint32_t stamp = 0;
         memcpy(&stamp, rest, 4);
+        g_sync_stamp = stamp;
+        g_sync_have = true;
         send_sync_ack(stamp);
         log_line("login sync ack stamp=%#x", stamp);
+    }
+    static const uint8_t kSyncNag[8] = {0x01, 0x00, 0x06, 0x04, 0xc2, 0x02, 0xc8, 0x00};
+    if (cmd == 13 && g_sync_have && rest && left == sizeof(kSyncNag) && memcmp(rest, kSyncNag, sizeof(kSyncNag)) == 0) {
+        send_sync_ack(g_sync_stamp);
+        log_line("login sync retry stamp=%#x", g_sync_stamp);
     }
     return 1;
 }

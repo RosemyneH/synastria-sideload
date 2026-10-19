@@ -598,6 +598,15 @@ void all_items_face(int* klass, int* race) {
     }
     *race = unit[0x44];
     *klass = unit[0x45];
+    if (*klass > 0) {
+        return;
+    }
+    for (int i = 0; i < g_class_count && i < 10; ++i) {
+        if (g_classes[i].id >= 1 && g_classes[i].id <= 11) {
+            *klass = g_classes[i].id;
+            return;
+        }
+    }
 }
 
 bool all_items_armor(int cls, int level, int sub) {
@@ -712,7 +721,10 @@ int all_items_char_ok(const ItemRow& row, uint32_t bits, int race) {
     if (row.flags & 0x08) {
         return 0;
     }
-    if (inv != 0x10 && bits != 0) {
+    if (bits == 0) {
+        return 0;
+    }
+    if (inv != 0x10) {
         int sub = row.sub;
         bool hit = false;
         if (row.klass == 4 && sub >= 1 && sub <= 4) {
@@ -888,8 +900,15 @@ int native_itemloc_all_items_in_zone(void* state) {
     uint32_t bits = 0;
     if (must_char != 0) {
         all_items_face(&klass, &race);
-        if (klass > 0) {
-            bits = 1u << ((klass - 1) & 31);
+        if (klass >= 1 && klass <= 11) {
+            bits |= 1u << (klass - 1);
+        }
+        int count = g_class_count < 10 ? g_class_count : 10;
+        for (int i = 0; i < count; ++i) {
+            int id = g_classes[i].id;
+            if (id >= 1 && id <= 11) {
+                bits |= 1u << (id - 1);
+            }
         }
     }
     const std::vector<uint16_t>& items = all_items_zone_list(static_cast<uint16_t>(zone));

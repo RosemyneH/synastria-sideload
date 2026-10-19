@@ -838,6 +838,10 @@ int native_can_attune(void* state) {
             }
         }
     }
+    if (bits == 0 && class_arg != 0) {
+        g_push_num(state, 0);
+        return 1;
+    }
     if (class_arg == 0) {
         g_push_num(state, 1);
         return 1;
