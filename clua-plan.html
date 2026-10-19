@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Synastria CLua plan</title>
+<style>
+body{font:15px/1.45 system-ui,sans-serif;margin:2rem auto;max-width:980px;color:#1c1917;background:#faf7f2}
+h1{font-size:1.55rem;margin-bottom:.2rem}
+.lead{color:#57534e}
+table{width:100%;border-collapse:collapse;margin:1rem 0 2rem;background:#fff}
+th,td{text-align:left;padding:.35rem .6rem;border-bottom:1px solid #e7e5e4}
+th{background:#292524;color:#fafaf9}
+.live{color:#166534;font-weight:600}
+.empty{color:#9a3412}
+code{font-size:.9rem}
+</style></head><body>
+<h1>All Synastria CLua functions</h1>
+<p class="lead">Every name <code>WoWExt.dll</code> registers into the game Lua state. Live calls return item-file fields, init-game attune data, the affix snapshot, or a client DBC name. Empty calls are registered and still return nothing. The quest, spell, loot, transmog, and map groups are the rest of the work.</p>
+
+<p><strong>48 live</strong> of <strong>153</strong>. <strong>105 still empty.</strong></p>
+<h2>Class and character <small>(19/19)</small></h2><table><tr><th>Function</th><th>Status</th></tr>
+<tr><td><code>CMCCreateGetSelectedClass</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCCreateSetSelectedClass</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassAt</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassCount</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassData</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassId</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassKey</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassMask</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassName</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassNameColor</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetClassNameFromPack</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetMultiClassEnabled</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCGetMyClassName</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCHasClass</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCIsDualSingleClass</code></td><td class='live'>live</td></tr>
+<tr><td><code>CMCSetSelectedTalents</code></td><td class='live'>live</td></tr>
+<tr><td><code>SynastriaCharacterClass</code></td><td class='live'>live</td></tr>
+<tr><td><code>SynastriaHarvest</code></td><td class='live'>live</td></tr>
+<tr><td><code>SynastriaSafeInvoke</code></td><td class='live'>live</td></tr>
+</table>
+<h2>Attune, items, and game data <small>(23/24)</small></h2><table><tr><th>Function</th><th>Status</th></tr>
+<tr><td><code>CalculateAttunableAffixCount</code></td><td class='live'>live</td></tr>
+<tr><td><code>CalculateAttunableCount</code></td><td class='live'>live</td></tr>
+<tr><td><code>CalculateAttunedAffixCount</code></td><td class='live'>live</td></tr>
+<tr><td><code>CalculateAttunedCount</code></td><td class='live'>live</td></tr>
+<tr><td><code>CalculateAttunedCountHigh</code></td><td class='live'>live</td></tr>
+<tr><td><code>CanAttuneItemHelperEx</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetAffixNameCustom</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetAttuneOverwrite</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetCustomGameData</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetCustomGameDataCount</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetCustomGameDataIndex</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetCustomGameDataString</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetHighestAttunePct</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetInProgressAttuneKeys</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetItemAffixMask</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetItemExtraCustom</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetItemInfoCustom</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetItemTagsCustom</code></td><td class='live'>live</td></tr>
+<tr><td><code>GetSafeInvokeQueue</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>HasAttunedAnyVariantEx</code></td><td class='live'>live</td></tr>
+<tr><td><code>IsAttunableBySomeone</code></td><td class='live'>live</td></tr>
+<tr><td><code>NotifyServer</code></td><td class='live'>live</td></tr>
+<tr><td><code>SetCustomGameData</code></td><td class='live'>live</td></tr>
+<tr><td><code>SetCustomGameDataString</code></td><td class='live'>live</td></tr>
+</table>
+<h2>Zones and item location <small>(4/27)</small></h2><table><tr><th>Function</th><th>Status</th></tr>
+<tr><td><code>Custom_AddTrackObjLoc</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_ClearTrackObjLoc</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetAllTrackObjLoc</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetCurrentZone</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetCurrentZoneOur</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetObjLoc</code></td><td class='live'>live</td></tr>
+<tr><td><code>Custom_GetObjLocVersion</code></td><td class='live'>live</td></tr>
+<tr><td><code>Custom_GetZoneName</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_IsObjLocLoaded</code></td><td class='live'>live</td></tr>
+<tr><td><code>Custom_RemoveTrackObjLoc</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_ZoneContains</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Debug_SetEnableZoneItemCache</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocFixupObjId</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetAllItemsInZone</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetAllObjsInZone</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetObjAt</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetObjCount</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetSourceAt</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetSourceCount</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetSourceSort</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocGetSourcesCompacted</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocIsLoaded</code></td><td class='live'>live</td></tr>
+<tr><td><code>ItemLocItemIsInMultiZone</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocItemIsInZone</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocSetObjSort</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocSetSourceSort</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>ItemLocSourceIsInZone</code></td><td class='empty'>empty</td></tr>
+</table>
+<h2>Quests, spells, and professions <small>(2/53)</small></h2><table><tr><th>Function</th><th>Status</th></tr>
+<tr><td><code>Custom_CacheHaveItems</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_DoProfessionRecipe</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetCurrentCursorItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetEntityExtraDataFloat</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetEntityExtraDataInt</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetGossipQuests</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetHaveItems</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetHighestLearnedSpell</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetIdFromLink</code></td><td class='live'>live</td></tr>
+<tr><td><code>Custom_GetItemCount</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetItemGuid</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetItemIdFromName</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetItemLinkBySlot</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetItemVars</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetMerchantItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetPendingEvents</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetPendingEventsEx</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetPrequest</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetProfessionRecipeFromCraftedItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetProfessionRecipeInfo</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetProfessionRecipeReagents</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetProfessionRecipes</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetQuestCanAccept</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetQuestCompleted</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetQuestData</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetQuestFaction</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetQuestItemId</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetQuestName</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetQuestReq</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetSkillIndex</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetSpellCooldown</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetSpellDesc</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetSpellEffect</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetSpellTools</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetTradeSkillTools</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_HasAcquiredItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_HaveAnyRewardOfQuest</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_Internal_SetResultFromUseContainerItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_IsContainerItemSoulbound</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_IsHaveItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_IsItemEquipMgr</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_IsItemSoulbound</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_IsOnQuest</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_IsPlayerNear</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_LockItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_QueueEvent</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_QueueEventEx</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_RegisterForUseContainerItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetEntityExtraDataFloat</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetEntityExtraDataInt</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetTradeSkillCustomFilter</code></td><td class='live'>live</td></tr>
+<tr><td><code>Custom_UnlockItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_UnregisterForUseContainerItem</code></td><td class='empty'>empty</td></tr>
+</table>
+<h2>Loot, transmog, and map <small>(0/30)</small></h2><table><tr><th>Function</th><th>Status</th></tr>
+<tr><td><code>Custom_CalculateMapMarker</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_ClearDressupFacing</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_FixupTransmogId</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetItemSelect</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetItemSelectCount</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetLootFilter</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetLootFilterRule</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetLootFilterRuleEntry</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetMapFilteredResults</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetMapMarker</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetTotalMapMarkerCount</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetTransmogEnchant</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_GetTransmogItem</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_LootFilterExport</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_LootFilterExportRule</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_LootFilterImport</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_LootFilterImportRule</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_LootFilterResetToDefault</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SendQuestTrack</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetDressupFacing</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetItemSelectFilter</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetLootFilter</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetLootFilterOptions</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetLootFilterRule</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetLootFilterRuleEnabled</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetLootFilterRuleEntry</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_SetMapMarkerOption</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_TranslateMapPosition</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>Custom_TransmogExport</code></td><td class='empty'>empty</td></tr>
+<tr><td><code>SetItemTrackerClassMask</code></td><td class='empty'>empty</td></tr>
+</table>
+</body></html>

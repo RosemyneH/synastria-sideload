@@ -486,6 +486,70 @@ int native_item_extra(void* state) {
     return 2;
 }
 
+int native_id_from_link(void* state) {
+    const char* text = g_to_str && g_is_str && g_is_str(state, 1) ? g_to_str(state, 1, nullptr) : nullptr;
+    const char* mark = text ? strstr(text, "item:") : nullptr;
+    g_push_num(state, mark ? atoi(mark + 5) : 0);
+    return 1;
+}
+
+int native_highest_attune(void* state) {
+    int item = arg_int(state, 1) & 0xffff;
+    double best = 0;
+    GameCat* cat = game_cat(11);
+    if (cat) {
+        for (const auto& entry : cat->nums) {
+            if ((entry.first & 0xffff) == item && entry.second > best) {
+                best = entry.second;
+            }
+        }
+    }
+    g_push_num(state, best);
+    return 1;
+}
+
+int native_in_progress_keys(void* state) {
+    (void)state;
+    int count = 0;
+    GameCat* cat = game_cat(11);
+    if (cat) {
+        for (const auto& entry : cat->nums) {
+            if (entry.second > 0 && entry.second < 100.0) {
+                ++count;
+            }
+        }
+    }
+    g_push_num(state, count);
+    return 1;
+}
+
+int native_attunable_count(void* state) {
+    (void)state;
+    int count = 0;
+    for (const ItemRow& row : g_items) {
+        if (row.on && (row.tag_word & 0x40)) {
+            ++count;
+        }
+    }
+    g_push_num(state, count);
+    return 1;
+}
+
+int native_attuned_high(void* state) {
+    (void)state;
+    int count = 0;
+    GameCat* cat = game_cat(11);
+    if (cat) {
+        for (const auto& entry : cat->nums) {
+            if (((static_cast<unsigned>(entry.first) >> 24) & 0xff) == 3 && entry.second >= 100.0) {
+                ++count;
+            }
+        }
+    }
+    g_push_num(state, count);
+    return 1;
+}
+
 int native_attune_overwrite(void* state) {
     int id = arg_int(state, 1) & 0xffff;
     const ItemRow* row = item_row(id);
@@ -749,11 +813,6 @@ int native_itemloc_loaded(void* state) {
 
 int native_zero(void* state) {
     g_push_num(state, 0);
-    return 1;
-}
-
-int native_true(void* state) {
-    g_push_bool(state, 1);
     return 1;
 }
 
@@ -1084,7 +1143,7 @@ const char* kStubs[] = {
     "Custom_GetQuestReq", "Custom_GetQuestCanAccept", "Custom_GetQuestCompleted",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
     "Custom_IsItemSoulbound", "Custom_GetItemCount", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
-    "Custom_GetItemLinkBySlot", "Custom_GetIdFromLink", "Custom_IsPlayerNear",
+    "Custom_GetItemLinkBySlot", "Custom_IsPlayerNear",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
@@ -1316,14 +1375,16 @@ void register_natives() {
     register_cmc("Custom_GetQuestName", native_empty);
     register_cmc("Custom_GetSpellDesc", native_empty);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
-    register_cmc("GetHighestAttunePct", native_zero);
-    register_cmc("GetInProgressAttuneKeys", stub_native);
+    register_cmc("GetHighestAttunePct", native_highest_attune);
+    register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
     register_cmc("GetSafeInvokeQueue", stub_native);
-    register_cmc("CalculateAttunableCount", native_zero);
+    register_cmc("CalculateAttunableCount", native_attunable_count);
     register_cmc("CalculateAttunableAffixCount", native_attunable_affixes);
     register_cmc("CalculateAttunedCount", native_attuned_count);
     register_cmc("CalculateAttunedAffixCount", native_attuned_affix_count);
-    register_cmc("CalculateAttunedCountHigh", native_zero);
+    register_cmc("CalculateAttunedCountHigh", native_attuned_high);
+    register_cmc("Debug_SetEnableZoneItemCache", stub_native);
+    register_cmc("Custom_GetIdFromLink", native_id_from_link);
     register_cmc("CanAttuneItemHelperEx", native_can_attune);
     register_cmc("HasAttunedAnyVariantEx", native_has_attuned);
     register_cmc("IsAttunableBySomeone", native_attunable_someone);
@@ -1336,7 +1397,6 @@ void register_natives() {
     register_cmc("Custom_GetMapMarker", native_zero);
     register_cmc("Custom_GetTotalMapMarkerCount", native_zero);
     register_cmc("Custom_SetMapMarkerOption", native_zero);
-    register_cmc("Custom_AddTrackObjLoc", native_true);
     for (const char* name : kStubs) {
         g_register(name, stub_native);
     }
