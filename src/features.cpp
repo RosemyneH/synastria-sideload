@@ -1235,6 +1235,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_item_select.inc"
 #include "natives/custom_clear_dressup_facing.inc"
 #include "natives/get_safe_invoke_queue.inc"
+#include "natives/set_item_tracker_class_mask.inc"
 #include "natives/custom_loot_filter_export_rule.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
@@ -1563,7 +1564,7 @@ void register_natives() {
     register_cmc("GetItemTagsCustom", native_item_tags);
     register_cmc("GetItemExtraCustom", native_item_extra);
     register_cmc("GetItemAffixMask", native_affix_mask);
-    register_cmc("SetItemTrackerClassMask", native_zero);
+    register_cmc("SetItemTrackerClassMask", native_item_tracker_class_mask);
     register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
     register_cmc("Custom_GetAllTrackObjLoc", native_get_all_track_obj_loc);
     register_cmc("Custom_GetMapMarker", native_zero);
