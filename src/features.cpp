@@ -1646,7 +1646,38 @@ bool decode_pairs(PktReader& in, std::vector<DataPair>& out) {
                 }
             }
         }
+    } else if (key_fmt == 4) {
+        uint32_t base = in.u32();
+        uint32_t span = in.u32();
+        if (!in.ok) {
+            return false;
+        }
+        if (span != 0) {
+            uint32_t groups = span / 64 + (span % 64 ? 1 : 0);
+            std::vector<uint8_t> words(groups);
+            if (!in.take(words.data(), groups)) {
+                return false;
+            }
+            for (uint32_t group = 0; group < groups; ++group) {
+                uint8_t word = words[group];
+                if (!word) {
+                    continue;
+                }
+                for (int bit = 0; bit < 8; ++bit) {
+                    if ((word & (1 << bit)) == 0) {
+                        continue;
+                    }
+                    uint8_t sub = in.u8();
+                    for (int sub_bit = 0; sub_bit < 8 && in.ok; ++sub_bit) {
+                        if (sub & (1 << sub_bit)) {
+                            keys.push_back(base + (group * 8 + static_cast<uint32_t>(bit)) * 8 + static_cast<uint32_t>(sub_bit));
+                        }
+                    }
+                }
+            }
+        }
     } else {
+        log_line("data blob key format %d rejected", key_fmt);
         return false;
     }
     if (!in.ok) {
@@ -1675,6 +1706,7 @@ bool decode_pairs(PktReader& in, std::vector<DataPair>& out) {
             out.push_back(pair);
             continue;
         } else if (!use_shared) {
+            log_line("data blob value format %d rejected", value_fmt);
             return false;
         }
         if (!in.ok) {
@@ -1829,6 +1861,7 @@ void apply_item_block(PktReader& in) {
 void apply_attune_block(PktReader& in) {
     uint8_t groups = in.u8();
     int written = 0;
+    log_line("init-game attune groups=%u at %u", groups, in.off);
     for (uint8_t g = 0; g < groups && in.ok; ++g) {
         uint8_t group = in.u8();
         std::vector<DataPair> pairs;
