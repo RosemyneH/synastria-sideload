@@ -441,25 +441,66 @@ double game_num(int cat, int key) {
     return found == cat_row->nums.end() ? 0 : found->second;
 }
 
+struct ItemRow {
+    bool on = false;
+    uint8_t klass = 0;
+    uint8_t quality = 0;
+    uint8_t sub = 0;
+    uint8_t inv = 0;
+    uint8_t flags = 0;
+    uint8_t stat_type = 0xff;
+    uint16_t class_mask = 0;
+    uint16_t race_mask = 0;
+    uint32_t display = 0;
+    uint32_t level = 0;
+    uint32_t tag_word = 0;
+    uint32_t affix_a = 0;
+    uint32_t affix_b = 0;
+    float stat_value = 0;
+    std::string name;
+};
+
+std::vector<ItemRow> g_items;
+
+const ItemRow* item_row(int id) {
+    id &= 0xffff;
+    if (id < 0 || id >= static_cast<int>(g_items.size()) || !g_items[static_cast<size_t>(id)].on) {
+        return nullptr;
+    }
+    return &g_items[static_cast<size_t>(id)];
+}
+
 int native_item_tags(void* state) {
-    int key = arg_int(state, 1) & 0xFF00FFFF;
-    uint32_t low = static_cast<uint32_t>(game_num(16, key));
-    uint32_t mid = static_cast<uint32_t>(game_num(17, key));
-    uint32_t high = static_cast<uint32_t>(game_num(20, key));
-    uint64_t word = (low & 0x3fffffu) | (static_cast<uint64_t>(mid & 0x3fffffu) << 22) | (static_cast<uint64_t>(high & 0xfffffu) << 44);
-    g_push_num(state, 0);
-    g_push_num(state, 0);
-    g_push_num(state, static_cast<uint32_t>(word));
-    g_push_num(state, static_cast<uint32_t>(word >> 32));
-    g_push_num(state, word ? __builtin_ctzll(word) + 1 : 0);
-    return 5;
+    const ItemRow* row = item_row(arg_int(state, 1));
+    uint32_t word = row ? row->tag_word : 0;
+    for (int i = 0; i < 4; ++i) {
+        g_push_num(state, (word >> (8 * i)) & 0xff);
+    }
+    return 4;
 }
 
 int native_item_extra(void* state) {
-    g_push_num(state, 0);
-    g_push_num(state, 0);
-    (void)state;
+    const ItemRow* row = item_row(arg_int(state, 1));
+    g_push_num(state, row ? row->class_mask : 0);
+    g_push_num(state, row ? row->race_mask : 0);
     return 2;
+}
+
+int native_attune_overwrite(void* state) {
+    int id = arg_int(state, 1) & 0xffff;
+    const ItemRow* row = item_row(id);
+    if (!row) {
+        g_push_num(state, 0);
+        g_push_num(state, 0);
+        g_push_num(state, 255);
+        g_push_num(state, 0);
+        return 4;
+    }
+    g_push_num(state, id);
+    g_push_num(state, row->flags);
+    g_push_num(state, row->stat_type);
+    g_push_num(state, row->stat_value);
+    return 4;
 }
 
 void affix_word(int key, uint32_t& low_out, uint32_t& high_out) {
@@ -489,8 +530,9 @@ int native_affix_mask(void* state) {
     }
     bool done = game_num(11, item | (forge << 24)) >= 100.0;
     uint64_t word = static_cast<uint64_t>(low) | (static_cast<uint64_t>(high) << 32);
-    g_push_num(state, low);
-    g_push_num(state, high);
+    const ItemRow* row = item_row(key);
+    g_push_num(state, row ? row->affix_a : low);
+    g_push_num(state, row ? row->affix_b : high);
     g_push_num(state, done ? low : 0);
     g_push_num(state, done ? high : 0);
     g_push_num(state, word ? __builtin_ctzll(word) + 1 : 0);
@@ -545,25 +587,21 @@ int native_affix_name(void* state) {
 }
 
 int native_attunable_someone(void* state) {
-    int item = arg_int(state, 1) & 0xffff;
-    bool on = game_num(16, item) != 0 || game_num(17, item) != 0 || game_num(20, item) != 0;
-    for (int forge = 0; forge <= 3 && !on; ++forge) {
-        int key = item | (forge << 24);
-        on = game_num(11, key) > 0 || game_num(16, key) != 0 || game_num(17, key) != 0 || game_num(20, key) != 0;
-    }
-    g_push_bool(state, on ? 1 : 0);
+    const ItemRow* row = item_row(arg_int(state, 1));
+    g_push_bool(state, row && (row->tag_word & 0x40) ? 1 : 0);
     return 1;
 }
 
 int native_can_attune(void* state) {
-    int item = arg_int(state, 1) & 0xffff;
-    bool on = false;
-    for (int forge = 0; forge <= 3 && !on; ++forge) {
-        int key = item | (forge << 24);
-        on = game_num(11, key) != 0 || game_num(16, key) != 0 || game_num(17, key) != 0 || game_num(20, key) != 0;
+    const ItemRow* row = item_row(arg_int(state, 1));
+    int status = 0;
+    if (row && (row->tag_word & 0x40)) {
+        status = (row->flags & 0x01) ? -5 : 1;
+        if ((row->flags & 0x08) && status == 1) {
+            status = -3;
+        }
     }
-    on = on || game_num(16, item) != 0 || game_num(17, item) != 0 || game_num(20, item) != 0;
-    g_push_num(state, on ? 1 : 0);
+    g_push_num(state, status);
     return 1;
 }
 
@@ -719,18 +757,6 @@ int native_true(void* state) {
     return 1;
 }
 
-struct ItemRow {
-    bool on = false;
-    uint8_t klass = 0;
-    uint8_t quality = 0;
-    uint8_t sub = 0;
-    uint8_t inv = 0;
-    uint32_t display = 0;
-    uint32_t level = 0;
-    std::string name;
-};
-
-std::vector<ItemRow> g_items;
 std::vector<uint8_t*> g_item_blobs;
 char g_root[1024] = {};
 bool g_items_loaded = false;
@@ -984,27 +1010,28 @@ void load_item_db(const uint8_t* data, size_t size) {
             in.u8();
         }
         if (head & 0x40) {
-            in.u16();
+            row.class_mask = in.u16();
         }
         if (head & 0x80) {
-            in.u16();
+            row.race_mask = in.u16();
         }
         row.level = (mask & 0x01) ? in.u8() : in.u16();
         if (mask & 0x02) {
             in.u8();
         }
         if (mask & 0x04) {
-            in.u8();
+            row.flags = in.u8();
         }
         if (mask & 0x08) {
-            in.u8();
-            in.u32();
+            row.stat_type = in.u8();
+            uint32_t bits = in.u32();
+            memcpy(&row.stat_value, &bits, 4);
         }
         row.display = (mask & 0x10) ? in.u16() : in.u32();
-        in.u32();
+        row.tag_word = in.u32();
         if (mask & 0x20) {
-            in.u32();
-            in.u32();
+            row.affix_a = in.u32();
+            row.affix_b = in.u32();
         }
         if (!in.ok) {
             break;
@@ -1288,7 +1315,7 @@ void register_natives() {
     register_cmc("Custom_GetZoneName", native_empty);
     register_cmc("Custom_GetQuestName", native_empty);
     register_cmc("Custom_GetSpellDesc", native_empty);
-    register_cmc("GetAttuneOverwrite", stub_native);
+    register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_zero);
     register_cmc("GetInProgressAttuneKeys", stub_native);
     register_cmc("GetSafeInvokeQueue", stub_native);
