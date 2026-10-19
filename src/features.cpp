@@ -1230,13 +1230,14 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_set_loot_filter_rule.inc"
 #include "natives/custom_loot_filter_export.inc"
 #include "natives/custom_get_item_select_count.inc"
+#include "natives/custom_set_item_select_filter.inc"
+#include "natives/custom_get_item_select.inc"
 #include "natives/custom_loot_filter_export_rule.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
 
 const char* kStubs[] = {
     "Custom_LootFilterImport", "Custom_LootFilterImportRule",
-    "Custom_SetItemSelectFilter", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_FixupTransmogId",
 };
@@ -1537,6 +1538,8 @@ void register_natives() {
     register_cmc("Custom_LootFilterExport", native_loot_filter_export);
     register_cmc("Custom_LootFilterExportRule", native_loot_filter_export_rule);
     register_cmc("Custom_GetItemSelectCount", native_get_item_select_count);
+    register_cmc("Custom_SetItemSelectFilter", native_set_item_select_filter);
+    register_cmc("Custom_GetItemSelect", native_get_item_select);
     register_cmc("Custom_LockItem", native_lock_item);
     register_cmc("Custom_UnlockItem", native_unlock_item);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);

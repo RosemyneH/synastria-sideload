@@ -1,6 +1,6 @@
 struct item_select_rec {
     const char* name;
-    int32_t id;
+    uint32_t id;
 };
 
 // ʕ •ᴥ•ʔ✿ item_select is the filtered list of item_select_rec*. Each row is name at +0 and int32 item id at +4. Count is the number of pointers. ✿ ʕ •ᴥ•ʔ
