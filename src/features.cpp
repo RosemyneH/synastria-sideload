@@ -1171,6 +1171,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_spell_effect.inc"
 #include "natives/custom_get_spell_tools.inc"
 #include "natives/custom_get_item_count.inc"
+#include "natives/custom_is_item_equip_mgr.inc"
 #include "natives/custom_is_have_item.inc"
 #include "natives/custom_is_item_soulbound.inc"
 #include "natives/custom_get_merchant_item.inc"
@@ -1198,7 +1199,6 @@ const char* kStubs[] = {
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_GetQuestItemId",
     "Custom_IsContainerItemSoulbound",
-    "Custom_IsItemEquipMgr",
     "Custom_GetItemLinkBySlot", "Custom_IsPlayerNear",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
@@ -1443,6 +1443,7 @@ void register_natives() {
     register_cmc("Custom_GetQuestCompleted", native_get_quest_completed);
     register_cmc("ItemLocGetSourceCount", native_itemloc_source_count);
     register_cmc("Custom_GetItemCount", native_get_item_count);
+    register_cmc("Custom_IsItemEquipMgr", native_is_item_equip_mgr);
     register_cmc("Custom_IsHaveItem", native_is_have_item);
     register_cmc("Custom_IsItemSoulbound", native_is_item_soulbound);
     register_cmc("Custom_GetQuestReq", native_get_quest_req);
