@@ -1243,13 +1243,14 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/get_safe_invoke_queue.inc"
 #include "natives/set_item_tracker_class_mask.inc"
 #include "natives/custom_get_transmog_enchant.inc"
+#include "natives/custom_get_transmog_item.inc"
+#include "natives/custom_fixup_transmog_id.inc"
 #include "natives/custom_loot_filter_export_rule.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
 
 const char* kStubs[] = {
-    "Custom_GetTransmogItem", "Custom_TransmogExport",
-    "Custom_FixupTransmogId",
+    "Custom_TransmogExport",
 };
 
 bool bind_lua() {
@@ -1575,6 +1576,8 @@ void register_natives() {
     register_cmc("GetItemAffixMask", native_affix_mask);
     register_cmc("SetItemTrackerClassMask", native_item_tracker_class_mask);
     register_cmc("Custom_GetTransmogEnchant", native_get_transmog_enchant);
+    register_cmc("Custom_GetTransmogItem", native_get_transmog_item);
+    register_cmc("Custom_FixupTransmogId", native_fixup_transmog_id);
     register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
     register_cmc("Custom_GetAllTrackObjLoc", native_get_all_track_obj_loc);
     register_cmc("Custom_GetMapMarker", native_get_map_marker);
