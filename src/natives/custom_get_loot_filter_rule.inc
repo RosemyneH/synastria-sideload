@@ -17,7 +17,7 @@ int32_t loot_rule_get_index(double value) {
     return static_cast<int32_t>(rounded) - 1;
 }
 
-// ʕ •ᴥ•ʔ✿ rule+0x24 is an x86 MSVC string; capacity lives at +0x14 and below 16 means the bytes are inline ✿ ʕ •ᴥ•ʔ
+// ʕ •ᴥ•ʔ✿ rule+0x24 is a string cell; capacity at +0x14 below 16 means the bytes are inline, otherwise a host pointer ✿ ʕ •ᴥ•ʔ
 const char* loot_rule_get_name(const uint8_t* rule) {
     const uint8_t* text = rule + 0x24;
     uint32_t capacity = 0;
@@ -25,9 +25,9 @@ const char* loot_rule_get_name(const uint8_t* rule) {
     if (capacity < 16) {
         return reinterpret_cast<const char*>(text);
     }
-    uint32_t ptr = 0;
+    const char* ptr = nullptr;
     memcpy(&ptr, text, sizeof(ptr));
-    return reinterpret_cast<const char*>(static_cast<uintptr_t>(ptr));
+    return ptr;
 }
 
 int native_get_loot_filter_rule(void* state) {
