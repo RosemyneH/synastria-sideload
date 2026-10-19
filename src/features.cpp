@@ -2457,17 +2457,17 @@ void publish_spell_records() {
             continue;
         }
         int spell = item.first;
+        if (spell_known(table, spell)) {
+            continue;
+        }
         const std::string& text = item.second.second;
-        bool exists = spell_known(table, spell);
         spell_set_name(table, spell, text.c_str(), static_cast<int>(text.size()));
         int family = spell_family(text);
         if (family) {
             spell_set_family(table, spell, family);
         }
         ++names;
-        if (!exists) {
-            ++created;
-        }
+        ++created;
     }
     log_line("spell db names=%d created=%d", names, created);
 }

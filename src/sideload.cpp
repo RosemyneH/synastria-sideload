@@ -945,14 +945,14 @@ void* hook_full_item(void* self, int id, void* guid, void* cb, void* user, bool 
     return g_full_item ? g_full_item(self, id, guid, cb, user, create) : nullptr;
 }
 
-using SkillLookupFn = const void* (*)(int, int, int);
-SkillLookupFn g_skill_lookup = nullptr;
+using AbilityLookupFn = void* (*)(int, int, int);
+AbilityLookupFn g_ability_lookup = nullptr;
 
-extern "C" const void* syn_skill_lookup(int race, int class_id, int skill_id) {
-    if (!g_skill_lookup) {
+extern "C" void* syn_ability_lookup(int race, int class_id, int spell_id) {
+    if (!g_ability_lookup) {
         return nullptr;
     }
-    const void* hit = g_skill_lookup(race, class_id, skill_id);
+    void* hit = g_ability_lookup(race, class_id, spell_id);
     if (hit) {
         return hit;
     }
@@ -962,7 +962,7 @@ extern "C" const void* syn_skill_lookup(int race, int class_id, int skill_id) {
         if (!other || other == class_id) {
             continue;
         }
-        hit = g_skill_lookup(race, other, skill_id);
+        hit = g_ability_lookup(race, other, spell_id);
         if (hit) {
             return hit;
         }
@@ -972,18 +972,18 @@ extern "C" const void* syn_skill_lookup(int race, int class_id, int skill_id) {
 
 void hook_skill_lookup() {
     void* target = nullptr;
-    if (!syn_resolve("_Z20SpellTableLookupInfoiii", &target)) {
-        log_line("missing SpellTableLookupInfo");
+    if (!syn_resolve("_Z23SpellTableLookupAbilityiii", &target)) {
+        log_line("missing SpellTableLookupAbility");
         return;
     }
     auto* code = static_cast<uint8_t*>(target);
-    if (code[0] != 0x8b || code[1] != 0x05) {
-        log_line("spell skill lookup prologue changed");
+    if (code[0] != 0x48 || code[1] != 0x83 || code[2] != 0xec || code[4] != 0x0f || code[5] != 0xb6 || code[6] != 0x05) {
+        log_line("spell ability lookup prologue changed");
         return;
     }
     int32_t disp = 0;
-    memcpy(&disp, code + 2, 4);
-    uintptr_t abs = reinterpret_cast<uintptr_t>(code + 6) + static_cast<intptr_t>(disp);
+    memcpy(&disp, code + 7, 4);
+    uintptr_t abs = reinterpret_cast<uintptr_t>(code + 11) + static_cast<intptr_t>(disp);
     long page = sysconf(_SC_PAGESIZE);
     auto* tramp = static_cast<uint8_t*>(mmap(nullptr, static_cast<size_t>(page), PROT_READ | PROT_WRITE | PROT_EXEC,
                                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
@@ -991,15 +991,18 @@ void hook_skill_lookup() {
         return;
     }
     uint8_t* at = tramp;
+    memcpy(at, code, 4);
+    at += 4;
     *at++ = 0x49;
     *at++ = 0xbb;
     memcpy(at, &abs, 8);
     at += 8;
     *at++ = 0x41;
-    *at++ = 0x8b;
+    *at++ = 0x0f;
+    *at++ = 0xb6;
     *at++ = 0x03;
-    memcpy(at, code + 6, 10);
-    at += 10;
+    memcpy(at, code + 11, 5);
+    at += 5;
     write_abs_jmp(at, code + 16);
 
     uintptr_t start = reinterpret_cast<uintptr_t>(code);
@@ -1009,11 +1012,11 @@ void hook_skill_lookup() {
     }
     uint8_t patch[16];
     memset(patch, 0x90, sizeof(patch));
-    write_abs_jmp(patch, reinterpret_cast<void*>(syn_skill_lookup));
+    write_abs_jmp(patch, reinterpret_cast<void*>(syn_ability_lookup));
     memcpy(code, patch, sizeof(patch));
     mprotect(reinterpret_cast<void*>(page_start), static_cast<size_t>(page) * 2, PROT_READ | PROT_EXEC);
-    g_skill_lookup = reinterpret_cast<SkillLookupFn>(tramp);
-    log_line("hooked spell skill lookup at %p", target);
+    g_ability_lookup = reinterpret_cast<AbilityLookupFn>(tramp);
+    log_line("hooked spell ability lookup at %p", target);
 }
 
 void hook_item_records() {
