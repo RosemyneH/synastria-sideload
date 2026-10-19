@@ -1116,6 +1116,7 @@ void load_quest_req(const uint8_t* data, size_t size);
 void load_itemloc_item_in_zone(const uint8_t* data, size_t size);
 void load_itemloc_item_in_multi_zone(const uint8_t* data, size_t size);
 void load_itemloc_source_in_zone(const uint8_t* data, size_t size);
+void load_itemloc_fixup_obj_id(const uint8_t* data, size_t size);
 
 void load_item_loc(const uint8_t* data, size_t size) {
     if (size < 4) {
@@ -1135,6 +1136,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
     load_itemloc_item_in_zone(data, size);
     load_itemloc_item_in_multi_zone(data, size);
     load_itemloc_source_in_zone(data, size);
+    load_itemloc_fixup_obj_id(data, size);
 }
 
 #include "natives/custom_get_current_zone.inc"
@@ -1147,6 +1149,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/itemloc_obj_count.inc"
 #include "natives/itemloc_source_at.inc"
 #include "natives/itemloc_get_source_sort.inc"
+#include "natives/itemloc_fixup_obj_id.inc"
+#include "natives/custom_get_quest_faction.inc"
 #include "natives/custom_get_current_zone_our.inc"
 #include "natives/custom_get_quest_completed.inc"
 #include "natives/itemloc_source_count.inc"
@@ -1171,7 +1175,7 @@ const char* kStubs[] = {
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetHaveItems", "Custom_IsHaveItem", "Custom_GetQuestItemId",
     "ItemLocSetSourceSort",
-    "ItemLocSetObjSort", "ItemLocFixupObjId",
+    "ItemLocSetObjSort",
     "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
@@ -1181,7 +1185,7 @@ const char* kStubs[] = {
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
-    "Custom_HaveAnyRewardOfQuest", "Custom_GetQuestFaction",
+    "Custom_HaveAnyRewardOfQuest",
     "Custom_GetSkillIndex",
     "Custom_GetSpellTools", "Custom_GetSpellEffect",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
@@ -1415,6 +1419,8 @@ void register_natives() {
     register_cmc("ItemLocGetObjCount", native_itemloc_obj_count);
     register_cmc("ItemLocGetSourceAt", native_itemloc_source_at);
     register_cmc("ItemLocGetSourceSort", native_itemloc_get_source_sort);
+    register_cmc("ItemLocFixupObjId", native_itemloc_fixup_obj_id);
+    register_cmc("Custom_GetQuestFaction", native_get_quest_faction);
     register_cmc("Custom_GetQuestCompleted", native_get_quest_completed);
     register_cmc("ItemLocGetSourceCount", native_itemloc_source_count);
     register_cmc("Custom_GetItemCount", native_get_item_count);

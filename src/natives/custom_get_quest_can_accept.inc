@@ -33,13 +33,11 @@ bool quest_accept_bound = false;
 
 uint32_t quest_accept_varint(BinReader& in) {
     uint32_t value = 0;
-    for (int shift = 0; shift <= 28 && in.ok; shift += 7) {
-        uint8_t byte = in.u8();
-        value |= static_cast<uint32_t>(byte & 0x7f) << shift;
-        if ((byte & 0x80) == 0) {
-            break;
-        }
-    }
+    uint8_t byte = 0;
+    do {
+        byte = in.u8();
+        value = (value << 7) | (byte & 0x7f);
+    } while (in.ok && (byte & 0x80) != 0);
     return value;
 }
 

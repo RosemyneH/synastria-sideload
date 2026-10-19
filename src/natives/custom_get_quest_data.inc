@@ -63,13 +63,11 @@ struct QuestDataIn {
 
     uint32_t leb() {
         uint32_t value = 0;
-        for (int i = 0; i < 5; ++i) {
-            uint8_t byte = u8();
-            value |= static_cast<uint32_t>(byte & 0x7f) << (7 * i);
-            if ((byte & 0x80) == 0) {
-                break;
-            }
-        }
+        uint8_t byte = 0;
+        do {
+            byte = u8();
+            value = (value << 7) | (byte & 0x7f);
+        } while (ok && (byte & 0x80) != 0);
         return value;
     }
 
