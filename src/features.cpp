@@ -392,14 +392,15 @@ int cmc_color(void* state) {
 }
 
 int cmc_talents(void* state) {
-    int id = arg_int(state, 1);
-    int ok = 0;
-    for (int i = 0; i < g_class_count; ++i) {
-        if (g_classes[i].id == id) {
-            ok = 1;
-        }
+    int index = arg_int(state, 1);
+    int slot = index - 1;
+    if (slot < 0 || slot > 9 || slot >= g_class_count || !g_classes[slot].id) {
+        g_push_bool(state, 0);
+        return 1;
     }
-    g_push_bool(state, ok || g_class_count == 0);
+    set_num(22, 2, index);
+    syn_net_notify(7, static_cast<uint32_t>(slot), nullptr);
+    g_push_bool(state, 1);
     return 1;
 }
 
@@ -648,16 +649,215 @@ int native_attunable_someone(void* state) {
     return 1;
 }
 
-int native_can_attune(void* state) {
-    const ItemRow* row = item_row(arg_int(state, 1));
-    int status = 0;
-    if (row && (row->tag_word & 0x40)) {
-        status = (row->flags & 0x01) ? -5 : 1;
-        if ((row->flags & 0x08) && status == 1) {
-            status = -3;
+// ʕ •ᴥ•ʔ✿ Inv types WoWExt accepts for attune. Shirt, bag, tabard, and ammo are out. ✿ ʕ •ᴥ•ʔ
+bool attune_inv_ok(int inv) {
+    if (inv > 27) {
+        return true;
+    }
+    return (0x6F3FFEEu >> inv) & 1u;
+}
+
+bool attune_weapon_ok(int cls, int inv, int sub, int klass) {
+    if (cls < 1 || cls > 11) {
+        return false;
+    }
+    if (inv == 22) {
+        const uint32_t offhand = (1u << 0) | (1u << 2) | (1u << 3) | (1u << 5) | (1u << 6);
+        if (((offhand >> (cls - 1)) & 1u) == 0) {
+            return false;
+        }
+    } else if (inv == 14 && cls != 1 && cls != 2 && cls != 7) {
+        return false;
+    }
+    auto allow = [&](int limit, uint32_t mask) {
+        return cls <= limit && ((mask >> (cls - 1)) & 1u);
+    };
+    if (klass == 2) {
+        bool ok = true;
+        switch (sub) {
+        case 19:
+            ok = cls == 5 || cls == 8 || cls == 9;
+            break;
+        case 2:
+        case 18:
+        case 3:
+        case 16:
+            ok = cls == 1 || cls == 3 || cls == 4;
+            break;
+        case 6:
+            ok = allow(11, 0x427);
+            break;
+        case 5:
+            ok = allow(11, 0x463);
+            break;
+        case 4:
+            ok = allow(11, 0x47b);
+            break;
+        case 15:
+            ok = allow(11, 0x5dd);
+            break;
+        case 10:
+            ok = allow(11, 0x5d5);
+            break;
+        case 7:
+            ok = allow(9, 0x1af);
+            break;
+        case 1:
+            ok = allow(7, 0x67);
+            break;
+        case 8:
+            ok = allow(6, 0x27);
+            break;
+        case 0:
+            ok = allow(7, 0x6f);
+            break;
+        case 13:
+            ok = allow(11, 0x44d);
+            break;
+        default:
+            break;
+        }
+        if (!ok) {
+            return false;
         }
     }
-    g_push_num(state, status);
+    if (inv == 28) {
+        if (sub == 7) {
+            return cls == 2;
+        }
+        if (sub == 8) {
+            return cls == 11;
+        }
+        if (sub == 9) {
+            return cls == 7;
+        }
+        if (sub == 10) {
+            return cls == 6;
+        }
+    }
+    return true;
+}
+
+bool attune_armor_ok(int cls, int sub, int level) {
+    int expect = 1;
+    int alt = 0;
+    if (cls == 1 || cls == 2 || cls == 6) {
+        expect = 4;
+        if (level < 45) {
+            alt = 3;
+        }
+    } else if (cls == 11 || cls == 4) {
+        expect = 2;
+    } else if (cls == 3 || cls == 7) {
+        expect = level < 45 ? 2 : 3;
+    }
+    return expect == sub || (alt && alt == sub);
+}
+
+int attune_class_bits(int class_arg, int extra) {
+    if (extra & 1) {
+        return class_arg;
+    }
+    if (class_arg < 0) {
+        int mask = 0;
+        int count = g_class_count < 10 ? g_class_count : 10;
+        for (int i = 0; i < count; ++i) {
+            int id = g_classes[i].id;
+            if (id >= 1 && id <= 11) {
+                mask |= 1 << (id - 1);
+            }
+        }
+        return mask;
+    }
+    if (class_arg > 0) {
+        int mask = 0;
+        int lo = class_arg & 0xf;
+        int hi = (class_arg >> 4) & 0xf;
+        if (lo > 0) {
+            mask |= 1 << (lo - 1);
+        }
+        if (hi > 0) {
+            mask |= 1 << (hi - 1);
+        }
+        return mask;
+    }
+    return 0;
+}
+
+int native_can_attune(void* state) {
+    bool has_class = g_is_num && g_is_num(state, 2);
+    bool has_race = g_is_num && g_is_num(state, 3);
+    bool has_extra = g_is_num && g_is_num(state, 5);
+    int class_arg = has_class ? arg_int(state, 2) : -1;
+    int race_arg = has_race ? arg_int(state, 3) : -1;
+    int extra = has_extra ? arg_int(state, 5) : 0;
+    bool server = g_is_num && g_is_num(state, 4) && arg_int(state, 4) > 0;
+    const ItemRow* row = item_row(arg_int(state, 1));
+    int status = server ? -1 : 0;
+    if (!row || (row->tag_word & 0x40) == 0 || !attune_inv_ok(row->inv)) {
+        g_push_num(state, status);
+        return 1;
+    }
+    if (row->flags & 0x01) {
+        g_push_num(state, server ? -1 : -5);
+        return 1;
+    }
+    if (row->flags & 0x08) {
+        g_push_num(state, server ? -1 : -3);
+        return 1;
+    }
+    int bits = attune_class_bits(class_arg, extra);
+    if (row->inv != 16 && bits != 0) {
+        if (row->klass == 4 && row->sub >= 1 && row->sub <= 4) {
+            bool matched = false;
+            for (int cls = 1; cls <= 11; ++cls) {
+                if ((bits & (1 << (cls - 1))) && attune_armor_ok(cls, row->sub, static_cast<int>(row->level))) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                g_push_num(state, server ? 0 : -2);
+                return 1;
+            }
+        }
+        for (int cls = 1; cls <= 11; ++cls) {
+            if ((bits & (1 << (cls - 1))) == 0) {
+                continue;
+            }
+            if (!attune_weapon_ok(cls, row->inv, row->sub, row->klass)) {
+                g_push_num(state, server ? 0 : -6);
+                return 1;
+            }
+        }
+    }
+    if (class_arg == 0) {
+        g_push_num(state, 1);
+        return 1;
+    }
+    uint32_t class_mask = row->class_mask & 0x5ffu;
+    if (class_mask != 0 && class_mask != 0x5ffu && (class_mask & static_cast<uint32_t>(bits)) == 0) {
+        g_push_num(state, server ? 0 : -7);
+        return 1;
+    }
+    if (race_arg == 0) {
+        g_push_num(state, 1);
+        return 1;
+    }
+    uint32_t race_mask = row->race_mask & 0x6ffu;
+    if (race_mask == 0 || race_mask == 0x6ffu) {
+        g_push_num(state, 1);
+        return 1;
+    }
+    bool race_ok = false;
+    if (extra & 2) {
+        race_ok = (static_cast<uint32_t>(race_arg) & race_mask) != 0;
+    } else if (race_arg < 0) {
+        race_ok = true;
+    } else if (race_arg >= 1 && race_arg <= 31) {
+        race_ok = (race_mask & (1u << (race_arg - 1))) != 0;
+    }
+    g_push_num(state, race_ok ? 1 : (server ? 0 : -8));
     return 1;
 }
 

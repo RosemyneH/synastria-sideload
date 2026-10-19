@@ -288,6 +288,25 @@ bool can_send() {
     return g_ctor && g_put_u8 && g_put_u32 && g_finalize && g_dtor && (g_net_send || g_send);
 }
 
+void send_sync_ack(uint32_t stamp) {
+    if (!can_send()) {
+        return;
+    }
+    alignas(16) unsigned char raw[64];
+    memset(raw, 0, sizeof(raw));
+    g_ctor(raw);
+    g_put_u32(raw, static_cast<uint32_t>(kOpcode));
+    g_put_u8(raw, 0x15);
+    g_put_u32(raw, stamp);
+    g_finalize(raw);
+    if (g_net_send && g_net) {
+        g_net_send(g_net, raw);
+    } else if (g_send) {
+        g_send(raw);
+    }
+    g_dtor(raw);
+}
+
 void send_ack() {
     if (!can_send()) {
         return;
@@ -436,6 +455,18 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
     if (cmd == 1) {
         send_ack();
         log_line("ack opcode=%#x tag=%#x token=%u", kOpcode, kReplyTag, g_token);
+    }
+    if (cmd == 20 && rest) {
+        uint32_t stamp = 0;
+        if (left >= 4) {
+            memcpy(&stamp, rest, 4);
+        } else if (left >= 2) {
+            uint16_t half = 0;
+            memcpy(&half, rest, 2);
+            stamp = half;
+        }
+        send_sync_ack(stamp);
+        log_line("login sync ack stamp=%#x", stamp);
     }
     return 1;
 }
