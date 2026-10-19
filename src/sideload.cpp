@@ -149,6 +149,7 @@ using CtorFn = void (*)(void*);
 using DtorFn = void (*)(void*);
 using PutU8Fn = void (*)(void*, uint8_t);
 using PutU32Fn = void (*)(void*, uint32_t);
+using PutStrFn = void (*)(void*, const char*);
 using FinalizeFn = void (*)(void*);
 using GetU8Fn = void (*)(void*, uint8_t*);
 using GetContextFn = void* (*)();
@@ -175,6 +176,7 @@ CtorFn g_ctor = nullptr;
 DtorFn g_dtor = nullptr;
 PutU8Fn g_put_u8 = nullptr;
 PutU32Fn g_put_u32 = nullptr;
+PutStrFn g_put_str = nullptr;
 FinalizeFn g_finalize = nullptr;
 GetU8Fn g_get_u8 = nullptr;
 GetContextFn g_lua_context = nullptr;
@@ -295,6 +297,31 @@ void send_ack() {
     g_put_u8(raw, 1);
     g_put_u32(raw, kReplyTag);
     g_put_u32(raw, g_token);
+    g_finalize(raw);
+    if (g_net_send && g_net) {
+        g_net_send(g_net, raw);
+    } else if (g_send) {
+        g_send(raw);
+    }
+    g_dtor(raw);
+}
+
+void syn_net_notify_impl(uint32_t a, uint32_t b, const char* text) {
+    if (!can_send() || !g_put_str) {
+        return;
+    }
+    alignas(16) unsigned char raw[64];
+    memset(raw, 0, sizeof(raw));
+    g_ctor(raw);
+    g_put_u32(raw, static_cast<uint32_t>(kOpcode));
+    g_put_u8(raw, 0x0c);
+    g_put_u32(raw, a);
+    g_put_u32(raw, b);
+    if (text) {
+        g_put_str(raw, text);
+    } else {
+        g_put_u8(raw, 0);
+    }
     g_finalize(raw);
     if (g_net_send && g_net) {
         g_net_send(g_net, raw);
@@ -580,6 +607,7 @@ bool resolve_all() {
         && bind_symbol("_ZN10CDataStoreD1Ev", reinterpret_cast<void**>(&g_dtor))
         && bind_symbol("_ZN10CDataStore3PutEh", reinterpret_cast<void**>(&g_put_u8))
         && bind_symbol("_ZN10CDataStore3PutEj", reinterpret_cast<void**>(&g_put_u32))
+        && bind_symbol("_ZN10CDataStore9PutStringEPKc", reinterpret_cast<void**>(&g_put_str))
         && bind_symbol("_ZN10CDataStore8FinalizeEv", reinterpret_cast<void**>(&g_finalize))
         && bind_symbol("_ZN10CDataStore3GetERh", reinterpret_cast<void**>(&g_get_u8))
         && bind_symbol("_Z22FrameScript_GetContextv", reinterpret_cast<void**>(&g_lua_context))
@@ -916,6 +944,10 @@ void install() {
 }
 
 }  // namespace
+
+void syn_net_notify(uint32_t a, uint32_t b, const char* text) {
+    syn_net_notify_impl(a, b, text);
+}
 
 __attribute__((constructor))
 static void syn_construct() {

@@ -4,12 +4,15 @@
 
 #include <lz4.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdint>
 #include <exception>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -47,7 +50,33 @@ bool g_scripts_ready = false;
 bool g_in_world = false;
 int g_script_wait = 0;
 
-std::vector<std::string> g_scripts;
+struct LuaScript {
+    int priority = 0;
+    uint32_t id = 0;
+    uint32_t group = 0;
+    std::string source;
+};
+
+std::vector<LuaScript> g_scripts;
+
+struct GameCat {
+    std::map<int, double> nums;
+    std::map<int, std::string> strs;
+};
+
+std::map<int, GameCat> g_game;
+
+void set_num(int cat, int key, double value) {
+    g_game[cat].nums[key] = value;
+}
+
+GameCat* game_cat(int cat) {
+    auto found = g_game.find(cat);
+    if (found == g_game.end()) {
+        return nullptr;
+    }
+    return &found->second;
+}
 
 struct CacheRecord {
     uint32_t id;
@@ -71,6 +100,12 @@ using PushBoolFn = void (*)(void*, int);
 using PushNilFn = void (*)(void*);
 using ToNumFn = double (*)(void*, int);
 using IsNumFn = int (*)(void*, int);
+using IsStrFn = int (*)(void*, int);
+using ToStrFn = const char* (*)(void*, int, size_t*);
+using GetFieldFn = void (*)(void*, int, const char*);
+using SetTopFn = void (*)(void*, int);
+using TypeFn = int (*)(void*, int);
+using ContextFn = void* (*)();
 
 RegisterFn g_register = nullptr;
 ExecFn g_exec = nullptr;
@@ -80,6 +115,12 @@ PushBoolFn g_push_bool = nullptr;
 PushNilFn g_push_nil = nullptr;
 ToNumFn g_to_num = nullptr;
 IsNumFn g_is_num = nullptr;
+IsStrFn g_is_str = nullptr;
+ToStrFn g_to_str = nullptr;
+GetFieldFn g_get_field = nullptr;
+SetTopFn g_set_top = nullptr;
+TypeFn g_type = nullptr;
+ContextFn g_context = nullptr;
 
 struct ClassInfo {
     int id;
@@ -372,6 +413,11 @@ int cmc_create_set(void* state) {
 
 int stub_native(void*) {
     return 0;
+}
+
+int native_empty(void* state) {
+    g_push_str(state, "");
+    return 1;
 }
 
 int native_obj_loaded(void* state) {
@@ -737,8 +783,8 @@ const char* kStubs[] = {
     "ItemLocGetObjCount", "ItemLocGetObjAt", "ItemLocSetObjSort", "ItemLocFixupObjId",
     "ItemLocItemIsInZone", "ItemLocItemIsInMultiZone", "ItemLocSourceIsInZone", "ItemLocGetAllItemsInZone",
     "ItemLocGetAllObjsInZone", "ItemLocGetSourcesCompacted",
-    "Custom_GetPrequest", "Custom_GetZoneName", "Custom_ZoneContains",
-    "Custom_GetCurrentZone", "Custom_GetCurrentZoneOur", "Custom_GetQuestName", "Custom_GetQuestData",
+    "Custom_GetPrequest", "Custom_ZoneContains",
+    "Custom_GetCurrentZone", "Custom_GetCurrentZoneOur", "Custom_GetQuestData",
     "Custom_GetQuestReq", "Custom_GetQuestCanAccept", "Custom_GetQuestCompleted",
     "Custom_GetCurrentCursorItem", "Custom_GetMerchantItem", "Custom_IsContainerItemSoulbound",
     "Custom_IsItemSoulbound", "Custom_GetItemCount", "Custom_IsItemEquipMgr", "Custom_GetItemGuid",
@@ -749,7 +795,7 @@ const char* kStubs[] = {
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_IsOnQuest", "Custom_HaveAnyRewardOfQuest", "Custom_GetQuestFaction",
     "Custom_SetTradeSkillCustomFilter", "Custom_GetSkillIndex",
-    "Custom_GetSpellCooldown", "Custom_GetSpellDesc", "Custom_GetSpellTools", "Custom_GetSpellEffect",
+    "Custom_GetSpellCooldown", "Custom_GetSpellTools", "Custom_GetSpellEffect",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
     "Custom_GetGossipQuests", "Custom_GetHighestLearnedSpell", "Custom_TranslateMapPosition",
@@ -767,7 +813,13 @@ bool bind_lua() {
         && syn_resolve("lua_pushboolean", reinterpret_cast<void**>(&g_push_bool))
         && syn_resolve("lua_pushnil", reinterpret_cast<void**>(&g_push_nil))
         && syn_resolve("lua_tonumber", reinterpret_cast<void**>(&g_to_num))
-        && syn_resolve("lua_isnumber", reinterpret_cast<void**>(&g_is_num));
+        && syn_resolve("lua_isnumber", reinterpret_cast<void**>(&g_is_num))
+        && syn_resolve("lua_isstring", reinterpret_cast<void**>(&g_is_str))
+        && syn_resolve("lua_tolstring", reinterpret_cast<void**>(&g_to_str))
+        && syn_resolve("lua_getfield", reinterpret_cast<void**>(&g_get_field))
+        && syn_resolve("lua_settop", reinterpret_cast<void**>(&g_set_top))
+        && syn_resolve("lua_type", reinterpret_cast<void**>(&g_type))
+        && syn_resolve("_Z22FrameScript_GetContextv", reinterpret_cast<void**>(&g_context));
 }
 
 struct ListedClass {
@@ -817,6 +869,88 @@ void harvest_characters() {
             g_listed[i].primary = primary;
         }
     }
+}
+
+int native_game_data(void* state) {
+    GameCat* cat = game_cat(arg_int(state, 1));
+    if (!cat) {
+        g_push_num(state, 0);
+        return 1;
+    }
+    auto found = cat->nums.find(arg_int(state, 2));
+    g_push_num(state, found == cat->nums.end() ? 0 : found->second);
+    return 1;
+}
+
+int native_game_string(void* state) {
+    GameCat* cat = game_cat(arg_int(state, 1));
+    if (!cat) {
+        g_push_nil(state);
+        return 1;
+    }
+    auto found = cat->strs.find(arg_int(state, 2));
+    if (found == cat->strs.end()) {
+        g_push_nil(state);
+        return 1;
+    }
+    g_push_str(state, found->second.c_str());
+    return 1;
+}
+
+int native_game_count(void* state) {
+    GameCat* cat = game_cat(arg_int(state, 1));
+    g_push_num(state, cat ? static_cast<double>(cat->nums.size()) : 0);
+    return 1;
+}
+
+int native_game_index(void* state) {
+    GameCat* cat = game_cat(arg_int(state, 1));
+    int index = arg_int(state, 2) - 1;
+    if (!cat || index < 0 || index >= static_cast<int>(cat->nums.size())) {
+        g_push_nil(state);
+        return 1;
+    }
+    auto it = cat->nums.begin();
+    std::advance(it, index);
+    g_push_num(state, it->first);
+    return 1;
+}
+
+int native_set_game_data(void* state) {
+    if (!g_is_num || !g_is_num(state, 3)) {
+        return 0;
+    }
+    set_num(arg_int(state, 1), arg_int(state, 2), g_to_num(state, 3));
+    return 0;
+}
+
+int native_set_game_string(void* state) {
+    const char* text = g_to_str && g_is_str && g_is_str(state, 3) ? g_to_str(state, 3, nullptr) : "";
+    g_game[arg_int(state, 1)].strs[arg_int(state, 2)] = text ? text : "";
+    return 0;
+}
+
+int native_notify(void* state) {
+    const char* text = g_to_str && g_is_str && g_is_str(state, 3) ? g_to_str(state, 3, nullptr) : nullptr;
+    syn_net_notify(static_cast<uint32_t>(arg_int(state, 1)), static_cast<uint32_t>(arg_int(state, 2)), text);
+    return 0;
+}
+
+int native_safe_invoke(void* state) {
+    const char* name = g_to_str ? g_to_str(state, 1, nullptr) : nullptr;
+    if (!name || !name[0] || !g_exec) {
+        return 0;
+    }
+    std::string script = "local fn = _G[\"";
+    for (const char* p = name; *p; ++p) {
+        if (*p == '\\' || *p == '"') {
+            script.push_back('\\');
+        }
+        script.push_back(*p);
+    }
+    script += "\"]\nif type(fn) == \"function\" then fn() end\n";
+    g_exec(script.c_str(), "SynastriaSafeInvoke", "synastria");
+    return 0;
 }
 
 int native_harvest(void* state) {
@@ -873,8 +1007,31 @@ void register_natives() {
     register_cmc("Custom_GetObjLocVersion", native_obj_version);
     register_cmc("Custom_GetObjLoc", native_get_obj_loc);
     register_cmc("ItemLocIsLoaded", native_itemloc_loaded);
-    register_cmc("GetCustomGameData", native_zero);
-    register_cmc("GetCustomGameDataStr", stub_native);
+    register_cmc("GetCustomGameData", native_game_data);
+    register_cmc("GetCustomGameDataString", native_game_string);
+    register_cmc("GetCustomGameDataCount", native_game_count);
+    register_cmc("GetCustomGameDataIndex", native_game_index);
+    register_cmc("SetCustomGameData", native_set_game_data);
+    register_cmc("SetCustomGameDataString", native_set_game_string);
+    register_cmc("NotifyServer", native_notify);
+    register_cmc("SynastriaSafeInvoke", native_safe_invoke);
+    register_cmc("GetAffixNameCustom", native_empty);
+    register_cmc("Custom_GetZoneName", native_empty);
+    register_cmc("Custom_GetQuestName", native_empty);
+    register_cmc("Custom_GetSpellDesc", native_empty);
+    register_cmc("GetAttuneOverwrite", stub_native);
+    register_cmc("GetHighestAttunePct", native_zero);
+    register_cmc("GetInProgressAttuneKeys", stub_native);
+    register_cmc("GetSafeInvokeQueue", stub_native);
+    register_cmc("CalculateAttunableCount", native_zero);
+    register_cmc("CalculateAttunableAffixCount", native_zero);
+    register_cmc("CalculateAttunedCount", native_zero);
+    register_cmc("CalculateAttunedAffixCount", native_zero);
+    register_cmc("CalculateAttunedCountHigh", native_zero);
+    register_cmc("CanAttuneItemHelperEx", native_zero);
+    register_cmc("HasAttunedAnyVariantEx", native_zero);
+    register_cmc("IsAttunableBySomeone", native_zero);
+    register_cmc("SetItemTrackerClassMask", native_zero);
     register_cmc("Custom_GetAllTrackObjLoc", stub_native);
     register_cmc("Custom_GetMapMarker", native_zero);
     register_cmc("Custom_GetTotalMapMarkerCount", native_zero);
@@ -887,6 +1044,20 @@ void register_natives() {
     log_line("registered CMC natives and %zu custom stubs", sizeof(kStubs) / sizeof(kStubs[0]));
 }
 
+bool frame_present(const char* name) {
+    if (!g_context || !g_get_field || !g_type || !g_set_top) {
+        return true;
+    }
+    void* state = g_context();
+    if (!state) {
+        return false;
+    }
+    g_get_field(state, kLuaGlobals, name);
+    int kind = g_type(state, -1);
+    g_set_top(state, -2);
+    return kind != 0;
+}
+
 void run_scripts() {
     if (g_scripts_ready || !g_exec) {
         return;
@@ -896,11 +1067,35 @@ void run_scripts() {
         g_scripts_ready = true;
         return;
     }
-    for (const std::string& source : g_scripts) {
-        g_exec(source.c_str(), "WoWExt.bin", "synastria");
+    int errors = 0;
+    for (const LuaScript& script : g_scripts) {
+        std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\n";
+        wrapped += script.source;
+        wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
+        g_exec(wrapped.c_str(), "WoWExt.bin", "synastria");
+        if (!g_context || !g_get_field || !g_to_str || !g_set_top) {
+            continue;
+        }
+        void* state = g_context();
+        if (!state) {
+            continue;
+        }
+        g_get_field(state, kLuaGlobals, "SynastriaScriptError");
+        const char* err = g_to_str(state, -1, nullptr);
+        if (err && err[0]) {
+            ++errors;
+            if (errors <= 8) {
+                log_line("lua %u error: %s", script.id, err);
+            }
+        }
+        g_set_top(state, -2);
+    }
+    if (!frame_present("PerkMgrFrame") && !frame_present("Custom_CreateFrame")) {
+        log_line("in-game lua did not install, will retry");
+        return;
     }
     g_scripts_ready = true;
-    log_line("executed %zu WoWExt.bin lua containers", g_scripts.size());
+    log_line("executed %zu WoWExt.bin lua containers errors=%d", g_scripts.size(), errors);
 }
 
 bool read_u32(const uint8_t* data, size_t size, size_t& offset, uint32_t& out) {
@@ -968,16 +1163,68 @@ void load_container(const char* path) {
             ++other_count;
             continue;
         }
-        int kind = static_cast<int8_t>(plain[1]);
-        if (kind != 2) {
+        size_t cursor = 1;
+        int type = 0;
+        int shift = 0;
+        bool typed = false;
+        while (cursor < static_cast<size_t>(plain_size) && shift < 28) {
+            uint8_t bite = plain[cursor++];
+            type |= (bite & 0x7f) << shift;
+            if ((bite & 0x80) == 0) {
+                typed = true;
+                break;
+            }
+            shift += 7;
+        }
+        if (!typed || type != 2 || cursor + 6 > static_cast<size_t>(plain_size)) {
             ++other_count;
             continue;
         }
-        g_scripts.emplace_back(plain.data() + 8, plain.data() + plain_size);
+        uint32_t group = 0;
+        memcpy(&group, plain.data() + cursor, 4);
+        cursor += 4;
+        uint16_t slen = 0;
+        memcpy(&slen, plain.data() + cursor, 2);
+        cursor += 2;
+        if (cursor + slen > static_cast<size_t>(plain_size)) {
+            ++other_count;
+            continue;
+        }
+        LuaScript script;
+        script.priority = static_cast<int8_t>(plain[0]);
+        script.id = id;
+        script.group = group;
+        script.source.assign(plain.data() + cursor, plain.data() + cursor + slen);
+        g_scripts.push_back(std::move(script));
         ++lua_count;
-        (void)id;
     }
-    log_line("WoWExt.bin containers lua=%d other=%d", lua_count, other_count);
+    // ʕ •ᴥ•ʔ✿ Priority byte, then id. A nonzero group is one script split across chunks that share locals. ✿ ʕ •ᴥ•ʔ
+    std::sort(g_scripts.begin(), g_scripts.end(), [](const LuaScript& a, const LuaScript& b) {
+        if (a.priority != b.priority) {
+            return a.priority < b.priority;
+        }
+        return a.id < b.id;
+    });
+    std::map<uint32_t, size_t> bundle_at;
+    std::vector<LuaScript> folded;
+    folded.reserve(g_scripts.size());
+    for (LuaScript& script : g_scripts) {
+        if (script.group == 0) {
+            folded.push_back(std::move(script));
+            continue;
+        }
+        auto found = bundle_at.find(script.group);
+        if (found == bundle_at.end()) {
+            bundle_at.emplace(script.group, folded.size());
+            folded.push_back(std::move(script));
+            continue;
+        }
+        folded[found->second].source.push_back('\n');
+        folded[found->second].source += script.source;
+    }
+    int bundles = lua_count - static_cast<int>(folded.size());
+    g_scripts = std::move(folded);
+    log_line("WoWExt.bin containers lua=%zu joined=%d other=%d", g_scripts.size(), bundles, other_count);
 }
 
 void adopt_classes(const uint8_t* rest, uint32_t size) {
@@ -1101,7 +1348,6 @@ void* syn_features_item_record(int id) {
 void syn_features_reset() {
     g_natives_ready = false;
     g_scripts_ready = false;
-    g_classes_ready = false;
     g_script_wait = 0;
 }
 
@@ -1117,12 +1363,143 @@ void syn_features_after() {
     if (!g_natives_ready || g_scripts_ready) {
         return;
     }
-    if (g_classes_ready || (g_in_world && g_script_wait++ > 180)) {
-        run_scripts();
+    if (!g_classes_ready && !(g_in_world && g_script_wait > 30)) {
+        if (g_in_world) {
+            ++g_script_wait;
+        }
+        return;
     }
+    if (g_script_wait > 0 && (g_script_wait % 45) != 0) {
+        ++g_script_wait;
+        return;
+    }
+    ++g_script_wait;
+    run_scripts();
+}
+
+struct PktReader {
+    const uint8_t* data;
+    uint32_t size;
+    uint32_t off = 0;
+    bool ok = true;
+
+    bool take(void* dst, uint32_t n) {
+        if (!ok || off + n > size) {
+            ok = false;
+            return false;
+        }
+        memcpy(dst, data + off, n);
+        off += n;
+        return true;
+    }
+
+    uint8_t u8() {
+        uint8_t value = 0;
+        take(&value, 1);
+        return value;
+    }
+
+    uint16_t u16() {
+        uint16_t value = 0;
+        take(&value, 2);
+        return value;
+    }
+
+    uint32_t u32() {
+        uint32_t value = 0;
+        take(&value, 4);
+        return value;
+    }
+
+    float f32() {
+        float value = 0;
+        take(&value, 4);
+        return value;
+    }
+};
+
+void apply_game_data(const uint8_t* rest, uint32_t size) {
+    PktReader in{rest, size};
+    uint16_t count = in.u16();
+    int applied = 0;
+    int skipped = 0;
+    for (uint16_t i = 0; i < count && in.ok; ++i) {
+        uint8_t kind = in.u8();
+        if (!in.ok) {
+            break;
+        }
+        if (kind == 4) {
+            continue;
+        }
+        if (kind == 5) {
+            int cat = static_cast<int>(in.u32());
+            int key = static_cast<int>(in.u32());
+            float value = in.f32();
+            if (in.ok) {
+                set_num(cat, key, value);
+                ++applied;
+            }
+            continue;
+        }
+        if (kind == 6) {
+            int cat = static_cast<int8_t>(in.u8());
+            int key = in.u16();
+            int raw = static_cast<int16_t>(in.u16());
+            if (in.ok) {
+                set_num(cat, key, raw * 0.01);
+                ++applied;
+            }
+            continue;
+        }
+        if (kind == 7) {
+            in.u32();
+            continue;
+        }
+        if (kind == 0x16) {
+            int cat = static_cast<int>(in.u32());
+            uint32_t nstr = in.u32();
+            for (uint32_t s = 0; s < nstr && in.ok; ++s) {
+                int key = static_cast<int>(in.u32());
+                uint8_t len = in.u8();
+                if (!in.ok) {
+                    break;
+                }
+                if (len == 0) {
+                    g_game[cat].strs[key].clear();
+                    continue;
+                }
+                if (in.off + len > in.size) {
+                    in.ok = false;
+                    break;
+                }
+                g_game[cat].strs[key].assign(reinterpret_cast<const char*>(in.data + in.off), len);
+                in.off += len;
+            }
+            if (in.ok) {
+                ++applied;
+            }
+            continue;
+        }
+        if (kind == 0x0b) {
+            log_line("game data snapshot left unread");
+            break;
+        }
+        in.u32();
+        uint32_t bytes = in.u32();
+        if (!in.ok || in.off + bytes > in.size) {
+            in.ok = false;
+            break;
+        }
+        in.off += bytes;
+        ++skipped;
+    }
+    log_line("game data records=%u applied=%d blobs=%d", count, applied, skipped);
 }
 
 void syn_features_packet(int cmd, const uint8_t* rest, uint32_t size) {
+    if (cmd == 13 && rest) {
+        apply_game_data(rest, size);
+    }
     if (cmd == 14 && rest) {
         adopt_classes(rest, size);
     }
