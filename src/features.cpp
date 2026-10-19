@@ -2013,12 +2013,47 @@ TalentApply& talent_apply() {
     return api;
 }
 
+void* active_player() {
+    static void* (*get)() = nullptr;
+    static bool ready = false;
+    if (!ready) {
+        ready = true;
+        void* found = nullptr;
+        if (syn_resolve("_Z28ClntObjMgrGetActivePlayerObjv", &found)) {
+            get = reinterpret_cast<void* (*)()>(found);
+        }
+    }
+    return get ? get() : nullptr;
+}
+
 void refresh_talent_tabs() {
     TalentApply& tabs = talent_apply();
-    if (g_in_world && tabs.leave && tabs.enter) {
-        tabs.leave();
-        tabs.enter();
+    if (!g_in_world || !tabs.leave || !tabs.enter) {
+        return;
     }
+    int slot = static_cast<int>(game_num(22, 2) + 0.01) - 1;
+    if (slot < 0) {
+        slot = 0;
+    }
+    uint8_t want = slot < g_class_count ? g_classes[slot].id : 0;
+    uint8_t* class_byte = nullptr;
+    uint8_t saved = 0;
+    void* player = active_player();
+    if (player && want) {
+        // ʕ •ᴥ•ʔ✿ CGPlayer_C unit data is +0x160, class is unitFieldBytes0[1]. ✿ ʕ •ᴥ•ʔ
+        auto* unit = *reinterpret_cast<uint8_t**>(static_cast<char*>(player) + 0x160);
+        if (unit) {
+            class_byte = unit + 0x45;
+            saved = *class_byte;
+            *class_byte = want;
+        }
+    }
+    tabs.leave();
+    tabs.enter();
+    if (class_byte) {
+        *class_byte = saved;
+    }
+    log_line("talent tabs class=%u", want);
 }
 
 void apply_saved_talents() {
