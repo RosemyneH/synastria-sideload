@@ -1126,6 +1126,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 }
 
 #include "natives/custom_get_current_zone.inc"
+#include "natives/custom_get_zone_name.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1373,7 +1374,7 @@ void register_natives() {
     register_cmc("NotifyServer", native_notify);
     register_cmc("SynastriaSafeInvoke", native_safe_invoke);
     register_cmc("GetAffixNameCustom", native_affix_name);
-    register_cmc("Custom_GetZoneName", native_empty);
+    register_cmc("Custom_GetZoneName", native_get_zone_name);
     register_cmc("Custom_GetCurrentZone", native_get_current_zone);
     register_cmc("Custom_GetQuestName", native_empty);
     register_cmc("Custom_GetSpellDesc", native_empty);
