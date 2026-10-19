@@ -1129,6 +1129,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_zone_name.inc"
 #include "natives/custom_zone_contains.inc"
 #include "natives/custom_get_quest_name.inc"
+#include "natives/custom_is_on_quest.inc"
 
 const char* kStubs[] = {
     "Custom_GetLootFilter", "Custom_GetLootFilterRule", "Custom_GetLootFilterRuleEntry",
@@ -1153,7 +1154,7 @@ const char* kStubs[] = {
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
-    "Custom_IsOnQuest", "Custom_HaveAnyRewardOfQuest", "Custom_GetQuestFaction",
+    "Custom_HaveAnyRewardOfQuest", "Custom_GetQuestFaction",
     "Custom_GetSkillIndex",
     "Custom_GetSpellCooldown", "Custom_GetSpellTools", "Custom_GetSpellEffect",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
@@ -1380,6 +1381,7 @@ void register_natives() {
     register_cmc("Custom_ZoneContains", native_zone_contains);
     register_cmc("Custom_GetCurrentZone", native_get_current_zone);
     register_cmc("Custom_GetQuestName", native_get_quest_name);
+    register_cmc("Custom_IsOnQuest", native_is_on_quest);
     register_cmc("Custom_GetSpellDesc", native_empty);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
