@@ -1195,6 +1195,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_is_player_near.inc"
 #include "natives/custom_is_container_soulbound.inc"
 #include "natives/custom_get_pending_events.inc"
+#include "natives/custom_get_quest_item_id.inc"
+#include "natives/custom_get_tradeskill_tools.inc"
 #include "natives/custom_queue_event.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
@@ -1212,13 +1214,12 @@ const char* kStubs[] = {
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
-    "Custom_GetQuestItemId",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
-    "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
+    "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe",
     "Custom_GetPendingEventsEx", "Custom_QueueEventEx",
 };
 
@@ -1477,6 +1478,8 @@ void register_natives() {
     register_cmc("Custom_IsPlayerNear", native_is_player_near);
     register_cmc("Custom_IsContainerItemSoulbound", native_is_container_soulbound);
     register_cmc("Custom_GetPendingEvents", native_get_pending_events);
+    register_cmc("Custom_GetQuestItemId", native_get_quest_item_id);
+    register_cmc("Custom_GetTradeSkillTools", native_get_tradeskill_tools);
     register_cmc("Custom_QueueEvent", native_queue_event);
     register_cmc("Custom_GetSkillIndex", native_get_skill_index);
     register_cmc("Custom_GetGossipQuests", native_get_gossip_quests);

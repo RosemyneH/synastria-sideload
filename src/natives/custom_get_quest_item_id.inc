@@ -44,7 +44,7 @@ bool quest_item_same(const char* text, const char* kind) {
 }
 
 int32_t quest_item_at(const char* type, uint32_t index) {
-    if (!quest_item_slots || index > 6) {
+    if (!quest_item_slots || index >= 6) {
         return 0;
     }
     const QuestItemSlot& slot = quest_item_slots[index];
