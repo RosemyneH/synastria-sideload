@@ -1234,6 +1234,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_set_item_select_filter.inc"
 #include "natives/custom_get_item_select.inc"
 #include "natives/custom_clear_dressup_facing.inc"
+#include "natives/get_safe_invoke_queue.inc"
 #include "natives/custom_loot_filter_export_rule.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
@@ -1548,7 +1549,7 @@ void register_natives() {
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
-    register_cmc("GetSafeInvokeQueue", stub_native);
+    register_cmc("GetSafeInvokeQueue", native_safe_invoke_queue);
     register_cmc("CalculateAttunableCount", native_attunable_count);
     register_cmc("CalculateAttunableAffixCount", native_attunable_affixes);
     register_cmc("CalculateAttunedCount", native_attuned_count);
