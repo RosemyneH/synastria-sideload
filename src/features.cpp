@@ -2271,11 +2271,25 @@ uint8_t* spell_plain(SpellTable& table, int id) {
     return stored.first->second.data();
 }
 
+void spell_fill_strings(uint8_t* row) {
+    // ʕ •ᴥ•ʔ✿ The spellbook reads the rank text with no null check. ✿ ʕ •ᴥ•ʔ
+    static char empty[] = "";
+    char* blank = empty;
+    for (int at = kSpellNameAt; at <= kSpellAuraAt; at += static_cast<int>(sizeof(char*))) {
+        char* text = nullptr;
+        memcpy(&text, row + at, sizeof(text));
+        if (!text) {
+            memcpy(row + at, &blank, sizeof(blank));
+        }
+    }
+}
+
 void spell_store(SpellTable& table, int id) {
     uint8_t* row = spell_plain(table, id);
     if (!row || !table.by_id) {
         return;
     }
+    spell_fill_strings(row);
     if (!table.compress) {
         table.by_id[id - table.min_id] = row;
         return;
