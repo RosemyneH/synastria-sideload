@@ -1189,6 +1189,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_send_quest_track.inc"
 #include "natives/custom_add_track_obj_loc.inc"
 #include "natives/custom_is_player_near.inc"
+#include "natives/custom_is_container_soulbound.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
@@ -1204,7 +1205,6 @@ const char* kStubs[] = {
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
     "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
     "Custom_CacheHaveItems", "Custom_GetQuestItemId",
-    "Custom_IsContainerItemSoulbound",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_Internal_SetResultFromUseContainerItem", "Custom_LockItem", "Custom_UnlockItem",
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
@@ -1467,6 +1467,7 @@ void register_natives() {
     register_cmc("Custom_SendQuestTrack", native_send_quest_track);
     register_cmc("Custom_AddTrackObjLoc", native_add_track_obj_loc);
     register_cmc("Custom_IsPlayerNear", native_is_player_near);
+    register_cmc("Custom_IsContainerItemSoulbound", native_is_container_soulbound);
     register_cmc("Custom_GetSkillIndex", native_get_skill_index);
     register_cmc("Custom_GetGossipQuests", native_get_gossip_quests);
     register_cmc("Custom_GetMerchantItem", native_get_merchant_item);
