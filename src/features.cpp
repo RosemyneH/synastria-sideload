@@ -1226,12 +1226,12 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_profession_recipes.inc"
 #include "natives/custom_set_loot_filter_rule_enabled.inc"
 #include "natives/custom_set_loot_filter_rule_entry.inc"
+#include "natives/custom_set_loot_filter_options.inc"
 #include "natives/custom_lock_item.inc"
 #include "natives/custom_unlock_item.inc"
 
 const char* kStubs[] = {
     "Custom_SetLootFilterRule",
-    "Custom_SetLootFilterOptions",
     "Custom_LootFilterExport", "Custom_LootFilterImport", "Custom_LootFilterExportRule", "Custom_LootFilterImportRule",
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
@@ -1529,6 +1529,7 @@ void register_natives() {
     register_cmc("Custom_GetProfessionRecipes", native_get_profession_recipes);
     register_cmc("Custom_SetLootFilterRuleEnabled", native_set_loot_filter_rule_enabled);
     register_cmc("Custom_SetLootFilterRuleEntry", native_set_loot_filter_rule_entry);
+    register_cmc("Custom_SetLootFilterOptions", native_set_loot_filter_options);
     register_cmc("Custom_LockItem", native_lock_item);
     register_cmc("Custom_UnlockItem", native_unlock_item);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
