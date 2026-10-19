@@ -2225,11 +2225,11 @@ SpellTable& spell_table() {
     if (ready) {
         return table;
     }
-    ready = true;
     void* found = nullptr;
     if (!syn_resolve("g_spellDB", &found) || !found) {
         return table;
     }
+    ready = true;
     table.base = static_cast<uint8_t*>(found);
     memcpy(&table.max_id, table.base + 0x10, 4);
     memcpy(&table.min_id, table.base + 0x14, 4);
@@ -2375,11 +2375,15 @@ bool spell_text_ok(const uint8_t* data, int length) {
 }
 
 void publish_spell_records() {
-    SpellTable& table = spell_table();
-    if (!table.base || !table.by_id) {
-        log_line("spell db missing");
+    static bool done = false;
+    if (done) {
         return;
     }
+    SpellTable& table = spell_table();
+    if (!table.base || !table.by_id) {
+        return;
+    }
+    done = true;
     char path[1024];
     snprintf(path, sizeof(path), "%s/WoWExt.bin", g_root);
     FILE* file = fopen(path, "rb");
@@ -2402,8 +2406,7 @@ void publish_spell_records() {
     }
     std::vector<char> plain(1 << 22);
     size_t offset = 12;
-    int names = 0;
-    int grouped = 0;
+    std::map<int, std::pair<int, std::string>> named;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t id = 0;
         uint32_t bytes = 0;
@@ -2424,59 +2427,49 @@ void publish_spell_records() {
             continue;
         }
         const uint8_t* cursor = reinterpret_cast<const uint8_t*>(plain.data());
-        int k = 10;
-        while (k + 6 < plain_size) {
-            uint32_t spell = 0;
-            uint16_t span = 0;
-            memcpy(&spell, cursor + k, 4);
-            memcpy(&span, cursor + k + 4, 2);
-            if (spell >= 1 && spell < static_cast<uint32_t>(kSpellIdLimit) && span >= 2 && span <= 80
-                && k + 6 + span <= plain_size && spell_text_ok(cursor + k + 6, span)) {
-                std::string text(reinterpret_cast<const char*>(cursor + k + 6), span);
-                int family = spell_family(text);
-                bool fresh = text.find('$') == std::string::npos && !spell_known(table, static_cast<int>(spell));
-                if (fresh) {
-                    spell_set_name(table, static_cast<int>(spell), text.c_str(), span);
-                    if (family) {
-                        spell_set_family(table, static_cast<int>(spell), family);
-                    }
-                    ++names;
-                }
-                k += 6 + span;
-                if (fresh && family && k + 3 <= plain_size) {
-                    uint16_t head = 0;
-                    memcpy(&head, cursor + k, 2);
-                    uint8_t many = cursor[k + 2];
-                    if (head >= 1 && head < kSpellIdLimit && many >= 1 && many <= 16
-                        && k + 3 + many * 2 <= plain_size) {
-                        bool fits = true;
-                        for (uint8_t n = 0; n < many; ++n) {
-                            uint16_t member = 0;
-                            memcpy(&member, cursor + k + 3 + n * 2, 2);
-                            if (member >= kSpellIdLimit) {
-                                fits = false;
-                                break;
-                            }
-                        }
-                        if (fits) {
-                            for (uint8_t n = 0; n < many; ++n) {
-                                uint16_t member = 0;
-                                memcpy(&member, cursor + k + 3 + n * 2, 2);
-                                if (member) {
-                                    spell_set_family(table, member, family);
-                                    ++grouped;
-                                }
-                            }
-                            k += 3 + many * 2;
-                        }
-                    }
-                }
+        for (int k = 8; k + 8 < plain_size; ++k) {
+            if (cursor[k] != 0 || cursor[k + 1] != 0) {
                 continue;
             }
-            ++k;
+            uint16_t span = 0;
+            memcpy(&span, cursor + k + 2, 2);
+            if (span < 4 || span > 40 || k + 4 + span > plain_size || !spell_text_ok(cursor + k + 4, span)) {
+                continue;
+            }
+            if (memchr(cursor + k + 4, '$', span)) {
+                continue;
+            }
+            uint16_t spell = 0;
+            memcpy(&spell, cursor + k - 2, 2);
+            if (spell < 100) {
+                continue;
+            }
+            std::string text(reinterpret_cast<const char*>(cursor + k + 4), span);
+            auto& slot = named[spell];
+            slot.first += 1;
+            slot.second = std::move(text);
         }
     }
-    log_line("spell db names=%d grouped=%d", names, grouped);
+    int names = 0;
+    int created = 0;
+    for (const auto& item : named) {
+        if (item.second.first != 1) {
+            continue;
+        }
+        int spell = item.first;
+        const std::string& text = item.second.second;
+        bool exists = spell_known(table, spell);
+        spell_set_name(table, spell, text.c_str(), static_cast<int>(text.size()));
+        int family = spell_family(text);
+        if (family) {
+            spell_set_family(table, spell, family);
+        }
+        ++names;
+        if (!exists) {
+            ++created;
+        }
+    }
+    log_line("spell db names=%d created=%d", names, created);
 }
 
 void publish_item_records() {
@@ -2610,6 +2603,7 @@ bool natives_visible() {
 }
 
 void syn_features_before() {
+    publish_spell_records();
     // ʕ •ᴥ•ʔ✿ The constructor runs before these vectors exist, so the file load waits for idle. ✿ ʕ •ᴥ•ʔ
     if (!g_items_loaded && g_root[0]) {
         g_items_loaded = true;
