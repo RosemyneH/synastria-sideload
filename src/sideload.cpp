@@ -755,11 +755,8 @@ struct ItemSlot {
 ItemSlot g_item_slots[24]{};
 
 extern "C" void* syn_item_hook(ItemSlot* slot, int id) {
-    void* found = slot && slot->original ? slot->original(id) : nullptr;
-    if (found) {
-        return found;
-    }
-    return syn_features_item_record(id);
+    // ʕ •ᴥ•ʔ✿ A miss must stay empty so the server item query can fill real stat values. ✿ ʕ •ᴥ•ʔ
+    return slot && slot->original ? slot->original(id) : nullptr;
 }
 
 uint8_t* emit_item_stub(uint8_t* at, ItemSlot* slot) {
@@ -791,11 +788,7 @@ using FullItemFn = void* (*)(void*, int, void*, void*, void*, bool);
 FullItemFn g_full_item = nullptr;
 
 void* hook_full_item(void* self, int id, void* guid, void* cb, void* user, bool create) {
-    void* found = g_full_item ? g_full_item(self, id, guid, cb, user, create) : nullptr;
-    if (found) {
-        return found;
-    }
-    return syn_features_item_record(id);
+    return g_full_item ? g_full_item(self, id, guid, cb, user, create) : nullptr;
 }
 
 void hook_item_records() {

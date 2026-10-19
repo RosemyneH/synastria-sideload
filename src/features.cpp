@@ -420,8 +420,19 @@ int native_empty(void* state) {
     return 1;
 }
 
+int g_tradeskill_filter = 0;
+
+int native_tradeskill_filter(void* state) {
+    if (g_is_num && g_is_num(state, 1)) {
+        g_tradeskill_filter = arg_int(state, 1);
+        return 0;
+    }
+    g_push_num(state, g_tradeskill_filter);
+    return 1;
+}
+
 int native_obj_loaded(void* state) {
-    g_push_bool(state, g_obj_loaded ? 1 : 0);
+    g_push_num(state, g_obj_loaded ? 1 : 0);
     return 1;
 }
 
@@ -442,7 +453,7 @@ int native_get_obj_loc(void* state) {
 }
 
 int native_itemloc_loaded(void* state) {
-    g_push_bool(state, g_itemloc_loaded ? 1 : 0);
+    g_push_num(state, g_itemloc_loaded ? 1 : 0);
     return 1;
 }
 
@@ -794,7 +805,7 @@ const char* kStubs[] = {
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_IsOnQuest", "Custom_HaveAnyRewardOfQuest", "Custom_GetQuestFaction",
-    "Custom_SetTradeSkillCustomFilter", "Custom_GetSkillIndex",
+    "Custom_GetSkillIndex",
     "Custom_GetSpellCooldown", "Custom_GetSpellTools", "Custom_GetSpellEffect",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
@@ -1032,6 +1043,7 @@ void register_natives() {
     register_cmc("HasAttunedAnyVariantEx", native_zero);
     register_cmc("IsAttunableBySomeone", native_zero);
     register_cmc("SetItemTrackerClassMask", native_zero);
+    register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
     register_cmc("Custom_GetAllTrackObjLoc", stub_native);
     register_cmc("Custom_GetMapMarker", native_zero);
     register_cmc("Custom_GetTotalMapMarkerCount", native_zero);
@@ -1302,6 +1314,20 @@ void syn_features_load(const char* root) {
     }
 }
 
+bool natives_visible() {
+    if (!g_natives_ready || !g_context || !g_get_field || !g_type || !g_set_top) {
+        return false;
+    }
+    void* state = g_context();
+    if (!state) {
+        return false;
+    }
+    g_get_field(state, kLuaGlobals, "CMCGetClassCount");
+    int kind = g_type(state, -1);
+    g_set_top(state, -2);
+    return kind == 6;
+}
+
 void syn_features_before() {
     // ʕ •ᴥ•ʔ✿ The constructor runs before these vectors exist, so the file load waits for idle. ✿ ʕ •ᴥ•ʔ
     if (!g_items_loaded && g_root[0]) {
@@ -1310,6 +1336,11 @@ void syn_features_before() {
     }
     if (!g_register && !bind_lua()) {
         return;
+    }
+    if (g_natives_ready && !natives_visible()) {
+        g_natives_ready = false;
+        g_scripts_ready = false;
+        g_script_wait = 0;
     }
     register_natives();
 }
