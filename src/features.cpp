@@ -1161,6 +1161,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_get_spell_desc.inc"
 #include "natives/custom_get_spell_cooldown.inc"
 #include "natives/custom_get_highest_spell.inc"
+#include "natives/custom_get_spell_effect.inc"
 #include "natives/custom_get_item_count.inc"
 #include "natives/custom_get_quest_req.inc"
 #include "natives/custom_get_prequest.inc"
@@ -1189,7 +1190,7 @@ const char* kStubs[] = {
     "Custom_GetEntityExtraDataInt", "Custom_GetEntityExtraDataFloat",
     "Custom_SetEntityExtraDataInt", "Custom_SetEntityExtraDataFloat",
     "Custom_GetSkillIndex",
-    "Custom_GetSpellTools", "Custom_GetSpellEffect",
+    "Custom_GetSpellTools",
     "Custom_GetProfessionRecipes", "Custom_GetProfessionRecipeInfo", "Custom_GetProfessionRecipeFromCraftedItem",
     "Custom_GetProfessionRecipeReagents", "Custom_DoProfessionRecipe", "Custom_GetTradeSkillTools",
     "Custom_GetGossipQuests", "Custom_TranslateMapPosition",
@@ -1437,6 +1438,7 @@ void register_natives() {
     register_cmc("Custom_GetSpellDesc", native_get_spell_desc);
     register_cmc("Custom_GetSpellCooldown", native_get_spell_cooldown);
     register_cmc("Custom_GetHighestLearnedSpell", native_get_highest_spell);
+    register_cmc("Custom_GetSpellEffect", native_get_spell_effect);
     register_cmc("GetAttuneOverwrite", native_attune_overwrite);
     register_cmc("GetHighestAttunePct", native_highest_attune);
     register_cmc("GetInProgressAttuneKeys", native_in_progress_keys);
