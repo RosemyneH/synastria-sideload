@@ -1206,6 +1206,8 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_set_entity_extra_int.inc"
 #include "natives/custom_set_result_use_container_item.inc"
 #include "natives/custom_get_loot_filter.inc"
+#include "natives/custom_get_item_vars.inc"
+#include "natives/custom_has_acquired_item.inc"
 #include "natives/custom_get_skill_index.inc"
 #include "natives/custom_get_gossip_quests.inc"
 #include "natives/itemloc_item_in_zone.inc"
@@ -1227,7 +1229,7 @@ const char* kStubs[] = {
     "Custom_LootFilterExport", "Custom_LootFilterImport", "Custom_LootFilterExportRule", "Custom_LootFilterImportRule",
     "Custom_SetItemSelectFilter", "Custom_GetItemSelectCount", "Custom_GetItemSelect",
     "Custom_SetDressupFacing", "Custom_ClearDressupFacing", "Custom_GetTransmogItem", "Custom_TransmogExport",
-    "Custom_GetTransmogEnchant", "Custom_GetItemVars", "Custom_HasAcquiredItem", "Custom_FixupTransmogId",
+    "Custom_GetTransmogEnchant", "Custom_FixupTransmogId",
     "Custom_RegisterForUseContainerItem", "Custom_UnregisterForUseContainerItem",
     "Custom_SetEntityExtraDataFloat",
     "Custom_GetProfessionRecipes",
@@ -1494,6 +1496,8 @@ void register_natives() {
     register_cmc("Custom_SetEntityExtraDataInt", native_set_entity_extra_int);
     register_cmc("Custom_Internal_SetResultFromUseContainerItem", native_set_result_use_container_item);
     register_cmc("Custom_GetLootFilter", native_get_loot_filter);
+    register_cmc("Custom_GetItemVars", native_get_item_vars);
+    register_cmc("Custom_HasAcquiredItem", native_has_acquired_item);
     register_cmc("Custom_GetQuestItemId", native_get_quest_item_id);
     register_cmc("Custom_GetTradeSkillTools", native_get_tradeskill_tools);
     register_cmc("Custom_QueueEvent", native_queue_event);
