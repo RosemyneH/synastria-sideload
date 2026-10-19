@@ -990,12 +990,17 @@ void hook_skill_lookup() {
     if (tramp == MAP_FAILED) {
         return;
     }
-    tramp[0] = 0x8b;
-    tramp[1] = 0x05;
-    int32_t redo = static_cast<int32_t>(abs - reinterpret_cast<uintptr_t>(tramp + 6));
-    memcpy(tramp + 2, &redo, 4);
-    memcpy(tramp + 6, code + 6, 10);
-    write_abs_jmp(tramp + 16, code + 16);
+    uint8_t* at = tramp;
+    *at++ = 0x49;
+    *at++ = 0xbb;
+    memcpy(at, &abs, 8);
+    at += 8;
+    *at++ = 0x41;
+    *at++ = 0x8b;
+    *at++ = 0x03;
+    memcpy(at, code + 6, 10);
+    at += 10;
+    write_abs_jmp(at, code + 16);
 
     uintptr_t start = reinterpret_cast<uintptr_t>(code);
     uintptr_t page_start = start & ~(static_cast<uintptr_t>(page) - 1);
