@@ -9,6 +9,7 @@
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Manifests.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Streaming.h"
+#include "Engine/Source/BlizzardCore/Source/System/Process/Process.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Tracker.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Util/SHA1.h"
 #include "Engine/Source/BlizzardCore/Source/System/Time/Time.h"
@@ -1551,7 +1552,22 @@ static void OpenArchives() {
     };
 
     for (uint32_t i = 0; i < sizeof(androidPrefetch) / sizeof(androidPrefetch[0]); i++) {
-        SFile::MakeFileLocal(androidPrefetch[i], 64, true);
+        bool local = false;
+
+        for (int attempt = 0; attempt < 120 && !local; attempt++) {
+            local = SFile::MakeFileLocal(androidPrefetch[i], 64, true) != 0;
+
+            if (!local) {
+                Blizzard::Process::Sleep(250);
+            }
+        }
+
+        if (!local) {
+            SErrDisplayAppFatal(
+                "Timed out streaming %s from the CDN.\n\nStay on the same Wi-Fi as the server and confirm "
+                "http://192.168.1.129:1119/ answers in a browser.",
+                androidPrefetch[i]);
+        }
     }
 #endif
 }

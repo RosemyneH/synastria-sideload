@@ -664,6 +664,11 @@ void SErrDisplayAppFatalCustomV(uint32_t errorcode, const char* format, va_list 
     vsnprintf(buffer, sizeof(buffer) - 1, format, args);
     buffer[sizeof(buffer) - 1] = 0;
 #if defined(__ANDROID__)
+    FILE* fatal = fopen("wowdecomp-fatal.txt", "wb");
+    if (fatal) {
+        fputs(buffer, fatal);
+        fclose(fatal);
+    }
     SDL_ShowSimpleMessageBox(0x10u, "wowdecomp", buffer, nullptr);
 #endif
     SErrDisplayError(errorcode, filename, linenumber, buffer, 0, 1, 0x11111111);

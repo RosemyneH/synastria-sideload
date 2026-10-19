@@ -26,7 +26,12 @@ static bool s_transportShouldBlock = true;
 
 static double s_throttleScale = 0.0085;
 
+#if defined(__ANDROID__)
+// ʕ •ᴥ•ʔ✿ Phone Wi-Fi CDN pulls need more than the 10s desktop curl budget ✿ ʕ •ᴥ•ʔ
+static uint32_t s_transportTimeout = 180000;
+#else
 static uint32_t s_transportTimeout = 10000;
+#endif
 
 static std::string s_cookieName;
 
