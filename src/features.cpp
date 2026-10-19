@@ -1191,6 +1191,7 @@ void load_item_loc(const uint8_t* data, size_t size) {
 #include "natives/custom_add_track_obj_loc.inc"
 #include "natives/custom_remove_track_obj_loc.inc"
 #include "natives/custom_clear_track_obj_loc.inc"
+#include "natives/custom_get_all_track_obj_loc.inc"
 #include "natives/custom_calculate_map_marker.inc"
 #include "natives/custom_is_player_near.inc"
 #include "natives/custom_is_container_soulbound.inc"
@@ -1514,7 +1515,7 @@ void register_natives() {
     register_cmc("GetItemAffixMask", native_affix_mask);
     register_cmc("SetItemTrackerClassMask", native_zero);
     register_cmc("Custom_SetTradeSkillCustomFilter", native_tradeskill_filter);
-    register_cmc("Custom_GetAllTrackObjLoc", stub_native);
+    register_cmc("Custom_GetAllTrackObjLoc", native_get_all_track_obj_loc);
     register_cmc("Custom_GetMapMarker", native_zero);
     register_cmc("Custom_GetTotalMapMarkerCount", native_zero);
     register_cmc("Custom_SetMapMarkerOption", native_zero);
