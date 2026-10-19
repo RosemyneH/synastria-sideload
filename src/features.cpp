@@ -2355,6 +2355,13 @@ void clear_cat(int cat) {
     g_game.erase(cat);
 }
 
+void clear_nums(int cat) {
+    auto found = g_game.find(cat);
+    if (found != g_game.end()) {
+        found->second.nums.clear();
+    }
+}
+
 uint32_t trunc_num(double value) {
     return static_cast<uint32_t>(static_cast<int64_t>(value));
 }
@@ -2742,6 +2749,30 @@ void apply_game_data(const uint8_t* rest, uint32_t size) {
             if (!in.ok) {
                 break;
             }
+            ++applied;
+            continue;
+        }
+        if (kind <= 2) {
+            int cat = static_cast<int>(in.u32());
+            uint32_t bytes = in.u32();
+            if (!in.ok || in.off + bytes > in.size) {
+                in.ok = false;
+                break;
+            }
+            PktReader sub{in.data + in.off, bytes};
+            in.off += bytes;
+            std::vector<DataPair> pairs;
+            if (!decode_pairs(sub, pairs)) {
+                log_line("game data cat %d kind %u rejected", cat, kind);
+                continue;
+            }
+            if (kind == 1) {
+                clear_nums(cat);
+            }
+            for (const DataPair& pair : pairs) {
+                set_num(cat, static_cast<int>(pair.key), pair_number(pair));
+            }
+            log_line("game data cat %d kind %u pairs %zu", cat, kind, pairs.size());
             ++applied;
             continue;
         }
