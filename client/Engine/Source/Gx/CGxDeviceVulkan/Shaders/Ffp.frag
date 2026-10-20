@@ -10,6 +10,9 @@ layout(location = 0) in vec4 inColor;
 layout(location = 1) in vec3 inTexCoord0;
 layout(location = 2) in vec3 inTexCoord1;
 layout(location = 3) in float inFog;
+layout(location = 7) in vec3 inWorld;
+layout(location = 8) in vec3 inWorldNormal;
+layout(location = 9) in vec3 inView;
 
 layout(location = 0) out vec4 outColor;
 
@@ -55,17 +58,36 @@ void main() {
     vec2 uvWidth = max(fwidth(uv), vec2(1e-6));
     int colorOp = u.stageColorOp.x;
 
-    // ʕ •ᴥ•ʔ✿ Color ops 6/7/8 are MSDF, 1px outline, and 2px outline ✿ ʕ •ᴥ•ʔ
+    // ʕ •ᴥ•ʔ✿ Color ops 6/7/8 are MSDF, 1px outline, and 2px outline. fogParams.zw and stageColorOp.z are the live range, sharpness, and view ✿ ʕ •ᴥ•ʔ
     if (colorOp >= 6 && colorOp <= 8) {
         vec3 msdf = texture(tex0, uv).rgb;
         float sd = MsdfMedian(msdf.r, msdf.g, msdf.b) - 0.5;
-        float screenPxRange = max(0.5 * dot(vec2(4.0 / 256.0), vec2(1.0) / uvWidth), 1.0);
-        float dist = sd * screenPxRange;
-        float outlinePx = colorOp == 8 ? 2.0 : (colorOp == 7 ? 1.0 : 0.0);
-        // ʕ •ᴥ•ʔ✿ The field only covers four texels. An outline that reaches the rim stays a box ✿ ʕ •ᴥ•ʔ
-        outlinePx = min(outlinePx, max(0.5 * screenPxRange - 1.0, 0.0));
-        float body = clamp(dist + 0.5, 0.0, 1.0);
-        float alpha = clamp(dist + 0.5 + outlinePx, 0.0, 1.0);
+        int msdfView = u.stageColorOp.z;
+
+        if (msdfView == 1) {
+            outColor = vec4(msdf, 1.0);
+            return;
+        }
+
+        if (msdfView == 2) {
+            float gray = clamp(sd + 0.5, 0.0, 1.0);
+            outColor = vec4(vec3(gray), 1.0);
+            return;
+        }
+
+        float range = u.fogParams.z > 0.0 ? u.fogParams.z : 4.0;
+        float sharp = u.fogParams.w > 0.0 ? u.fogParams.w : 1.0;
+        float spread = max(0.5 * dot(vec2(range / 256.0), vec2(1.0) / uvWidth), 1.0);
+        // ʕ •ᴥ•ʔ✿ Sharpness can tighten the edge, but a subpixel step turns Friz into stair pixels ✿ ʕ •ᴥ•ʔ
+        float px = clamp(spread * sharp, 1.15, 2.4);
+        float dist = sd * px;
+        // ʕ •ᴥ•ʔ✿ The stored field ends at half a pixel-range. Past that the quad must stay clear, or each word sits on a box ✿ ʕ •ᴥ•ʔ
+        float budget = max(0.5 * px - 0.55, 0.0);
+        float outlinePx = colorOp == 8 ? 1.25 : (colorOp == 7 ? 0.75 : 0.0);
+        outlinePx = min(outlinePx, budget);
+        float weight = min(0.35, max(budget - outlinePx, 0.0));
+        float body = clamp(dist + 0.5 + weight, 0.0, 1.0);
+        float alpha = clamp(dist + 0.5 + weight + outlinePx, 0.0, 1.0);
         vec4 color = vec4(inColor.rgb * body / max(alpha, 1e-4), inColor.a * alpha);
 
         if (u.flags.w > 0 && color.a * 255.0 < float(u.flags.w)) {
@@ -84,6 +106,25 @@ void main() {
 
         if (u.stageColorOp.y >= 0) {
             color = Stage(1, texture(tex1, inTexCoord1.xy / inTexCoord1.z), color);
+        }
+    }
+
+    if (u.stageColorOp.w == 2) {
+        float normalLen = dot(inWorldNormal, inWorldNormal);
+        vec3 normal = normalLen > 1e-6 ? inWorldNormal * inversesqrt(normalLen) : vec3(0.0, 0.0, 1.0);
+        vec3 viewDir = normalize(-inView);
+        float fresnel = pow(1.0 - clamp(abs(dot(normal, viewDir)), 0.0, 1.0), 4.0);
+        vec3 deep = mix(vec3(0.04, 0.22, 0.2), vec3(0.55, 0.28, 0.12), u.lightAtten[3].z);
+        color.rgb = mix(deep, color.rgb, clamp(u.lightAtten[3].x, 0.15, 1.0));
+        vec3 sunDir = u.lightPos[0].w == 0.0 ? normalize(-u.lightPos[0].xyz) : vec3(0.0, 0.0, 1.0);
+        vec3 halfDir = normalize(sunDir + viewDir);
+        float spec = pow(max(dot(normal, halfDir), 0.0), 48.0);
+        color.rgb += vec3(1.0, 0.95, 0.85) * spec * fresnel * u.matEmissive.w;
+        float crest = sin(inWorld.x * 1.7 + u.fogParams.w) * sin(inWorld.y * 1.3 - u.fogParams.w * 0.7);
+        color.rgb = mix(color.rgb, vec3(0.86, 0.9, 0.92), clamp(crest - 0.55, 0.0, 1.0) * u.ambient.w);
+        if (u.lightAtten[3].y > 0.05) {
+            float ring = sin(length(inWorld.xy) * 2.5 - u.fogParams.w * 6.0);
+            color.rgb += vec3(0.7, 0.8, 0.85) * smoothstep(0.85, 1.0, ring) * u.lightAtten[3].y * 0.25;
         }
     }
 

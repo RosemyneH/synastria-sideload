@@ -205,6 +205,7 @@ void syn_bind_client() {
     bind_fn("_ZN8CGGameUI8LockItemE7WOWGUID", &CGGameUI::LockItem);
     bind_ptr("_ZN8CGGameUI8m_areaIDE", &CGGameUI::m_areaID);
     bind_fn("_ZN8CGItem_C15GetInventoryArtEi", static_cast<const char* (*)(int32_t)>(&CGItem_C::GetInventoryArt));
+    bind_fn("_Z20ClientDBStringLookupj", &ClientDBStringLookup);
     bind_fn("_ZN8CGItem_C7IsBoundEv", &item_bound);
     bind_fn("_ZN8CGUnit_C13LookupAbilityEi", &lookup_ability);
     bind_fn("_ZN9CGTooltip22GetItemHyperlinkStringEP8CGItem_C", static_cast<const char* (*)(CGItem_C*)>(&CGTooltip::GetItemHyperlinkString));

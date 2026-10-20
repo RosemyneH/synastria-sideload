@@ -15,6 +15,7 @@
 #include "Engine/Source/Frame/CSimpleTop.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
 #include "Engine/Source/FrameXML/FrameXML.h"
+#include "Engine/Source/Gx/Atmosphere.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/CGxTexFlags.h"
 #include "Engine/Source/Gx/Gx.h"
@@ -952,6 +953,16 @@ void CGWorldFrame::UpdateScreenEffectParams() {
         }
     }
 
+    if (Atmosphere_Master()) {
+        float scaled = static_cast<float>(glowLevel) * Atmosphere_GlowScale();
+        if (scaled < 0.0f) {
+            scaled = 0.0f;
+        } else if (scaled > 255.0f) {
+            scaled = 255.0f;
+        }
+        glowLevel = static_cast<uint8_t>(scaled);
+    }
+
     int32_t params[3] = { underwater, glowLevel, level };
     CGWorldFrame::ffxEffectGlow->SetParameters(3, params);
 }
@@ -1492,9 +1503,15 @@ static int32_t UnitUpdateProc(WOWGUID guid, void* param) {
 
     switch (object->m_obj->m_type) {
         case TYPEMASK_OBJECT | TYPEMASK_UNIT:
-        case TYPEMASK_OBJECT | TYPEMASK_UNIT | TYPEMASK_PLAYER:
-            static_cast<CGUnit_C*>(object)->UpdateDisplay(FrameTime::s_curTimeMs);
+        case TYPEMASK_OBJECT | TYPEMASK_UNIT | TYPEMASK_PLAYER: {
+            CGUnit_C* unit = static_cast<CGUnit_C*>(object);
+            // ʕ •ᴥ•ʔ✿ Culled bodies still sit on the visible list. A Dalaran crowd was ticking all of them ✿ ʕ •ᴥ•ʔ
+            if (!unit->IsActivePlayer() && unit->m_worldObject && !World::QueryObjectVisible(unit->m_worldObject)) {
+                break;
+            }
+            unit->UpdateDisplay(FrameTime::s_curTimeMs);
             break;
+        }
 
         case TYPEMASK_OBJECT | TYPEMASK_GAMEOBJECT:
             static_cast<CGGameObject_C*>(object)->UpdateDisplay(FrameTime::s_curTimeMs);
@@ -1516,7 +1533,15 @@ static int32_t PostAnimateVisibleUnit(WOWGUID guid, void* param) {
     CGObject_C* object = ClntObjMgrObjectPtr(guid, TYPEMASK_OBJECT, __FILE__, __LINE__);
 
     if (object && (object->m_obj->m_type & TYPEMASK_UNIT)) {
-        static_cast<CGUnit_C*>(object)->PostAnimate(static_cast<CGWorldFrame*>(param));
+        CGUnit_C* unit = static_cast<CGUnit_C*>(object);
+        // ʕ •ᴥ•ʔ✿ Culled bodies stay on the visible list. A plate cannot show, so skip the screen test ✿ ʕ •ᴥ•ʔ
+        if (!unit->IsActivePlayer() && unit->m_worldObject && !World::QueryObjectVisible(unit->m_worldObject)) {
+            if (unit->m_namePlateFrame) {
+                unit->DestroyNamePlate();
+            }
+            return 1;
+        }
+        unit->PostAnimate(static_cast<CGWorldFrame*>(param));
     }
 
     return 1;
@@ -1635,6 +1660,7 @@ void CGWorldFrame::UpdateDayNight(float deltaSec) {
     }
 
     info->m_weatherIntensity = World::s_weather->m_densityBlend * World::s_weather->m_fogIntensity;
+    Atmosphere_ApplyTime(info->m_dayProgression, info->m_timeOfDay);
 }
 
 // VERIFY: 1381402d manual

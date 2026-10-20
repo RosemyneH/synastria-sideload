@@ -91,6 +91,11 @@ float g_indentPixelWidth;
 uint8_t g_fontStatsEnabled;
 
 int32_t g_fontMsdf;
+float g_fontMsdfRange = 4.0f;
+
+float GxuFontMsdfRange() {
+    return g_fontMsdfRange;
+}
 
 // STATIC: 0x00C7D2C4
 uint32_t g_heightPixels;
@@ -226,7 +231,8 @@ float GxuFontGetOneToOneHeight(CGxFont* face) {
         return 0.0f;
     }
 
-    return static_cast<float>(face->GetPixelSize()) / static_cast<float>(g_heightPixels);
+    uint32_t em = face->m_nominalSize ? face->m_nominalSize : face->GetPixelSize();
+    return static_cast<float>(em) / static_cast<float>(g_heightPixels);
 }
 
 // VERIFY: 1ebc6f2b auto
@@ -898,25 +904,57 @@ int32_t GxuFontCreateFont(const char* name, float fontHeight, CGxFont*& face, ui
     return result;
 }
 
+static int32_t s_msdfFlush;
+
 void GxuFontSetMsdfEnabled(int32_t enabled) {
-    g_fontMsdf = enabled != 0;
+    enabled = enabled != 0;
+
+    if (g_fontMsdf == enabled) {
+        return;
+    }
+
+    g_fontMsdf = enabled;
+    s_msdfFlush = 1;
+}
+
+void GxuFontSetMsdfRange(float range) {
+    if (range < 1.0f) {
+        range = 1.0f;
+    } else if (range > 8.0f) {
+        range = 8.0f;
+    }
+
+    if (range == g_fontMsdfRange) {
+        return;
+    }
+
+    g_fontMsdfRange = range;
+    s_msdfFlush = 1;
+}
+
+void GxuFontFlushMsdf() {
+    if (!s_msdfFlush) {
+        return;
+    }
+
+    s_msdfFlush = 0;
 
     for (CGxFont* font = g_fonts.Head(); font; font = g_fonts.Next(font)) {
         uint32_t flags = font->m_fontFlags;
         uint32_t next = flags;
 
-        if (g_fontMsdf && !(flags & GxFontFlag_Monochrome)) {
+        if (g_fontMsdf) {
             next |= GxFontFlag_Msdf;
         } else if (!(flags & GxFontFlag_MsdfExplicit)) {
             next &= ~GxFontFlag_Msdf;
         }
 
-        if (next == flags) {
-            continue;
-        }
-
+        int32_t changed = next != flags;
         font->m_fontFlags = next;
-        font->HandleScreenSizeChange();
+
+        if (changed || (next & GxFontFlag_Msdf)) {
+            font->HandleScreenSizeChange();
+        }
     }
 }
 

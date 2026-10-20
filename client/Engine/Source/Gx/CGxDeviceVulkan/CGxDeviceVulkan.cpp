@@ -11,6 +11,7 @@
 #include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Base/Profiler.h"
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
+#include "Engine/Source/Gx/Atmosphere.h"
 #include "Engine/Source/Gx/WowDecompVk.h"
 #include "Engine/Source/Storm/H/storm.h"
 
@@ -32,6 +33,10 @@ static const uint32_t s_fxaaVertexCode[] =
 
 static const uint32_t s_fxaaFragmentCode[] =
 #include "Fxaa.frag.inc"
+;
+
+static const uint32_t s_atmosphereCode[] =
+#include "Atmosphere.frag.inc"
 ;
 
 static int32_t ShaderDesaturates(CGxShader* shader) {
@@ -867,6 +872,9 @@ void CGxDeviceVulkan::ISceneBegin() {
     this->m_frameActive = 1;
     this->m_frameCleared = 0;
     this->m_passActive = 0;
+    this->m_atmosApplied = 0;
+    this->m_atmosWorldDraw = 0;
+    Atmosphere_BeginFrame();
     this->IInvalidateCmdState();
     this->ShaderConstantsClear();
 }
@@ -933,6 +941,26 @@ void CGxDeviceVulkan::IDestroyPost() {
         vkDestroySampler(device, this->m_postSampler, nullptr);
     }
 
+    if (this->m_atmosPipeline) {
+        vkDestroyPipeline(device, this->m_atmosPipeline, nullptr);
+    }
+
+    if (this->m_atmosLayout) {
+        vkDestroyPipelineLayout(device, this->m_atmosLayout, nullptr);
+    }
+
+    if (this->m_atmosSetLayout) {
+        vkDestroyDescriptorSetLayout(device, this->m_atmosSetLayout, nullptr);
+    }
+
+    if (this->m_atmosFragment) {
+        vkDestroyShaderModule(device, this->m_atmosFragment, nullptr);
+    }
+
+    if (this->m_atmosDepthSampler) {
+        vkDestroySampler(device, this->m_atmosDepthSampler, nullptr);
+    }
+
     if (this->m_postPass) {
         vkDestroyRenderPass(device, this->m_postPass, nullptr);
     }
@@ -945,6 +973,11 @@ void CGxDeviceVulkan::IDestroyPost() {
     this->m_postSampler = VK_NULL_HANDLE;
     this->m_postPass = VK_NULL_HANDLE;
     this->m_postFormat = VK_FORMAT_UNDEFINED;
+    this->m_atmosPipeline = VK_NULL_HANDLE;
+    this->m_atmosLayout = VK_NULL_HANDLE;
+    this->m_atmosSetLayout = VK_NULL_HANDLE;
+    this->m_atmosFragment = VK_NULL_HANDLE;
+    this->m_atmosDepthSampler = VK_NULL_HANDLE;
 }
 
 int32_t CGxDeviceVulkan::IEnsurePost() {
@@ -1248,6 +1281,196 @@ void CGxDeviceVulkan::IApplyPost() {
     this->m_dynamicValid = 0;
 }
 
+void CGxDeviceVulkan::IApplyAtmosphere() {
+    if (this->m_atmosApplied || !Atmosphere_PostActive() || !this->m_atmosWorldDraw || this->m_passTarget) {
+        return;
+    }
+
+    if (!this->m_vk.Frame().recording || !this->m_vk.m_depth.view || !this->IEnsurePost()) {
+        return;
+    }
+
+    VkDevice device = this->m_vk.m_device;
+
+    if (!this->m_atmosFragment) {
+        VkShaderModuleCreateInfo moduleInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        moduleInfo.codeSize = sizeof(s_atmosphereCode);
+        moduleInfo.pCode = s_atmosphereCode;
+        if (vkCreateShaderModule(device, &moduleInfo, nullptr, &this->m_atmosFragment) != VK_SUCCESS) {
+            return;
+        }
+    }
+
+    if (!this->m_atmosDepthSampler) {
+        VkSamplerCreateInfo samplerInfo = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(device, &samplerInfo, nullptr, &this->m_atmosDepthSampler) != VK_SUCCESS) {
+            return;
+        }
+    }
+
+    if (!this->m_atmosSetLayout) {
+        VkDescriptorSetLayoutBinding bindings[3] = {};
+        bindings[0] = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+        bindings[1] = { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+        bindings[2] = { 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+        VkDescriptorSetLayoutCreateInfo setInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        setInfo.bindingCount = 3;
+        setInfo.pBindings = bindings;
+        if (vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &this->m_atmosSetLayout) != VK_SUCCESS) {
+            return;
+        }
+    }
+
+    if (!this->m_atmosLayout) {
+        VkPipelineLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &this->m_atmosSetLayout;
+        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &this->m_atmosLayout) != VK_SUCCESS) {
+            return;
+        }
+    }
+
+    if (!this->m_atmosPipeline) {
+        VkPipelineShaderStageCreateInfo stages[2] = {
+            { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, this->m_postVertex, "main", nullptr },
+            { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, this->m_atmosFragment, "main", nullptr },
+        };
+        VkPipelineVertexInputStateCreateInfo vertexInput = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo viewport = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        viewport.viewportCount = 1;
+        viewport.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo raster = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo multisample = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo depth = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        VkPipelineColorBlendAttachmentState attachment = {};
+        attachment.colorWriteMask = 0xF;
+        VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        blend.attachmentCount = 1;
+        blend.pAttachments = &attachment;
+        VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamic = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        dynamic.dynamicStateCount = 2;
+        dynamic.pDynamicStates = dynamicStates;
+        VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        info.stageCount = 2;
+        info.pStages = stages;
+        info.pVertexInputState = &vertexInput;
+        info.pInputAssemblyState = &inputAssembly;
+        info.pViewportState = &viewport;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &multisample;
+        info.pDepthStencilState = &depth;
+        info.pColorBlendState = &blend;
+        info.pDynamicState = &dynamic;
+        info.layout = this->m_atmosLayout;
+        info.renderPass = this->m_postPass;
+        if (vkCreateGraphicsPipelines(device, this->m_pipelineCache, 1, &info, nullptr, &this->m_atmosPipeline) != VK_SUCCESS) {
+            this->m_atmosPipeline = VK_NULL_HANDLE;
+            return;
+        }
+    }
+
+    this->IEndPass();
+
+    C44Matrix viewProj = this->m_atmosView * this->m_atmosProj;
+    float det = viewProj.Determinant();
+    if (fabsf(det) < 1.0e-12f) {
+        return;
+    }
+    C44Matrix invViewProj = viewProj.Inverse(det);
+
+    VkFrame& frame = this->m_vk.Frame();
+    VkDeviceSize alignment = this->m_vk.m_properties.limits.minUniformBufferOffsetAlignment;
+    VkDeviceSize offset = (frame.uniformOffset + alignment - 1) / alignment * alignment;
+    if (offset + sizeof(AtmosGpu) > frame.uniforms.size || !frame.uniforms.mapped) {
+        return;
+    }
+
+    AtmosGpu gpu;
+    Atmosphere_FillGpu(gpu, reinterpret_cast<const float*>(&viewProj), reinterpret_cast<const float*>(&invViewProj), this->m_atmosNear, this->m_atmosFar, this->m_vk.m_extent.width, this->m_vk.m_extent.height, this->m_vk.m_depthSampled);
+    memcpy(frame.uniforms.mapped + offset, &gpu, sizeof(gpu));
+    frame.uniformOffset = offset + sizeof(gpu);
+
+    VkCommandBuffer cmd = frame.cmd;
+    VkImage swap = this->m_vk.m_swapImages[this->m_vk.m_imageIndex];
+    uint32_t width = this->m_vk.m_extent.width;
+    uint32_t height = this->m_vk.m_extent.height;
+    VkImageAspectFlags depthAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (this->m_vk.m_depthFormat == VK_FORMAT_D24_UNORM_S8_UINT || this->m_vk.m_depthFormat == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+        depthAspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+
+    VkContext::Barrier(cmd, swap, VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkContext::Barrier(cmd, this->m_postColor.image, VK_IMAGE_ASPECT_COLOR_BIT, 1, this->m_postColorLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    this->m_postColorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    VkImageCopy region = {};
+    region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.extent = { width, height, 1 };
+    vkCmdCopyImage(cmd, swap, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, this->m_postColor.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    VkContext::Barrier(cmd, this->m_postColor.image, VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    this->m_postColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkContext::Barrier(cmd, swap, VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkContext::Barrier(cmd, this->m_vk.m_depth.image, depthAspect, 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    VkDescriptorSet set = this->m_vk.AllocateSet(this->m_atmosSetLayout);
+    if (!set) {
+        VkContext::Barrier(cmd, swap, VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        VkContext::Barrier(cmd, this->m_vk.m_depth.image, depthAspect, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        return;
+    }
+
+    VkDescriptorImageInfo images[2] = {
+        { this->m_postSampler, this->m_postColor.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        { this->m_atmosDepthSampler, this->m_vk.m_depthSampled ? this->m_vk.m_depth.view : this->m_postColor.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+    };
+    VkDescriptorBufferInfo bufferInfo = { frame.uniforms.buffer, 0, sizeof(AtmosGpu) };
+    VkWriteDescriptorSet writes[3] = {};
+    writes[0] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &images[0], nullptr, nullptr };
+    writes[1] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &images[1], nullptr, nullptr };
+    writes[2] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, nullptr, &bufferInfo, nullptr };
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+
+    VkRenderPassBeginInfo begin = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    begin.renderPass = this->m_postPass;
+    begin.framebuffer = this->m_postFramebuffers[this->m_vk.m_imageIndex];
+    begin.renderArea.extent = { width, height };
+    vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport = {};
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.maxDepth = 1.0f;
+    VkRect2D scissor = {};
+    scissor.extent = { width, height };
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    uint32_t dynamicOffset = static_cast<uint32_t>(offset);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this->m_atmosPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this->m_atmosLayout, 0, 1, &set, 1, &dynamicOffset);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
+
+    VkContext::Barrier(cmd, this->m_vk.m_depth.image, depthAspect, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    this->m_atmosApplied = 1;
+    this->m_dynamicValid = 0;
+}
+
 void CGxDeviceVulkan::ISceneEnd() {
     if (!this->m_frameActive) {
         return;
@@ -1258,6 +1481,7 @@ void CGxDeviceVulkan::ISceneEnd() {
     this->IEndPass();
 
     if (drew) {
+        this->IApplyAtmosphere();
         this->IApplyPost();
     }
 
@@ -1446,6 +1670,7 @@ void CGxDeviceVulkan::SceneClear(uint32_t mask, CImVector color) {
 }
 
 void CGxDeviceVulkan::XformSetProjection(const C44Matrix& matrix) {
+    int32_t wasPerspective = fabsf(this->m_projNative.d3) < 1.0e-4f && fabsf(this->m_projNative.c3) > 0.5f;
     CGxDevice::XformSetProjection(matrix);
 
     C44Matrix projNative = matrix;
@@ -1457,6 +1682,8 @@ void CGxDeviceVulkan::XformSetProjection(const C44Matrix& matrix) {
     if (projNative.d3 == 0.0f) {
         float minZ = -(projNative.d2 / (projNative.c2 + 1.0f));
         float maxZ = -(projNative.d2 / (projNative.c2 - 1.0f));
+        this->m_atmosNear = minZ;
+        this->m_atmosFar = maxZ;
         projNative.c2 = maxZ / (maxZ - minZ);
         projNative.d2 = maxZ * minZ / (minZ - maxZ);
     } else {
@@ -1477,6 +1704,11 @@ void CGxDeviceVulkan::XformSetProjection(const C44Matrix& matrix) {
 
     this->m_xforms[GxXform_Projection].m_dirty = 1;
     this->m_projNative = projNative;
+
+    int32_t nowPerspective = fabsf(this->m_projNative.d3) < 1.0e-4f && fabsf(this->m_projNative.c3) > 0.5f;
+    if (wasPerspective && !nowPerspective) {
+        this->IApplyAtmosphere();
+    }
 }
 
 void CGxDeviceVulkan::IXformSetViewport() {
@@ -1661,7 +1893,7 @@ void CGxDeviceVulkan::IBuildUniforms(VkDrawUniforms& uniforms) {
         this->IXformTex(tmu, uniforms.stageTexMode[tmu], uniforms.texMatrix[tmu]);
     }
 
-    uniforms.stageColorOp[2] = -1;
+    uniforms.stageColorOp[2] = WowDecompVk_MsdfView();
     uniforms.stageColorOp[3] = -1;
 
     // ʕ •ᴥ•ʔ✿ stageColorOp.z is unused by the combiners. It flags the Desaturate stand-in ✿ ʕ •ᴥ•ʔ
@@ -1701,6 +1933,33 @@ void CGxDeviceVulkan::IBuildUniforms(VkDrawUniforms& uniforms) {
             uniforms.lightAtten[i][0] = light.m_constantAttenuation;
             uniforms.lightAtten[i][1] = light.m_linearAttenuation;
             uniforms.lightAtten[i][2] = light.m_quadraticAttenuation;
+
+            int32_t mainView = fabsf(this->m_projNative.d3) < 1.0e-4f && fabsf(this->m_projNative.c3) > 0.5f && !this->m_passTarget;
+            if (mainView) {
+                if (light.m_dir.w == 1.0f) {
+                    float linear = light.m_linearAttenuation;
+                    float quad = light.m_quadraticAttenuation;
+                    float range = 16.0f;
+                    if (quad > 1.0e-4f) {
+                        range = sqrtf(8.0f / quad);
+                    } else if (linear > 1.0e-4f) {
+                        range = 8.0f / linear;
+                    }
+                    if (range < 4.0f) {
+                        range = 4.0f;
+                    } else if (range > 80.0f) {
+                        range = 80.0f;
+                    }
+                    float brightness = light.m_dirColor.x + light.m_dirColor.y + light.m_dirColor.z;
+                    Atmosphere_NoteLamp(light.m_dir.x, light.m_dir.y, light.m_dir.z, range, light.m_dirColor.x, light.m_dirColor.y, light.m_dirColor.z, range > 28.0f && brightness > 1.2f);
+                } else {
+                    float brightness = light.m_dirColor.x + light.m_dirColor.y + light.m_dirColor.z;
+                    float len = sqrtf(light.m_dir.x * light.m_dir.x + light.m_dir.y * light.m_dir.y + light.m_dir.z * light.m_dir.z);
+                    if (len > 1.0e-4f) {
+                        Atmosphere_NoteSun(-light.m_dir.x / len, -light.m_dir.y / len, -light.m_dir.z / len, brightness);
+                    }
+                }
+            }
         }
     } else if (!hasColor && matDiffuse != 0xFFFFFFFF) {
         uniforms.flags[0] = 1;
@@ -1717,6 +1976,8 @@ void CGxDeviceVulkan::IBuildUniforms(VkDrawUniforms& uniforms) {
     ColorToFloats(rs[GxRs_FogColor].m_value.m_data.u[0], uniforms.fogColor);
     uniforms.fogParams[0] = rs[GxRs_FogStart].m_value.m_data.f[0];
     uniforms.fogParams[1] = rs[GxRs_FogEnd].m_value.m_data.f[0];
+    uniforms.fogParams[2] = WowDecompVk_MsdfRange();
+    uniforms.fogParams[3] = WowDecompVk_MsdfSharp();
 
     float pointSize = rs[GxRs_PointScale].m_value.m_data.f[0];
     uniforms.misc[0] = pointSize > 1.0f && this->m_vk.m_features.largePoints ? pointSize : 1.0f;
@@ -1726,6 +1987,42 @@ void CGxDeviceVulkan::IBuildUniforms(VkDrawUniforms& uniforms) {
 
     if (WowDecompVk_Unlit()) {
         uniforms.flags[0] = 0;
+    }
+
+    int32_t mainView = fabsf(this->m_projNative.d3) < 1.0e-4f && fabsf(this->m_projNative.c3) > 0.5f && !this->m_passTarget;
+    if (mainView) {
+        this->m_atmosView = uniforms.view;
+        this->m_atmosProj = uniforms.proj;
+        this->m_atmosWorldDraw = 1;
+    }
+
+    int32_t drawKind = Atmosphere_DrawKind();
+    uniforms.stageColorOp[3] = drawKind > 0 ? drawKind : -1;
+    if (drawKind == Atmosphere_GrassDraw) {
+        float wind, time, radius, force, playerX, playerY, playerZ;
+        Atmosphere_GrassParams(wind, time, radius, force, playerX, playerY, playerZ);
+        uniforms.fogParams[2] = wind;
+        uniforms.fogParams[3] = time;
+        uniforms.ambient[3] = 0.78539816f;
+        uniforms.matEmissive[3] = 18.0f;
+        uniforms.lightPos[3][0] = playerX;
+        uniforms.lightPos[3][1] = playerY;
+        uniforms.lightPos[3][2] = playerZ;
+        uniforms.lightPos[3][3] = 1.0f;
+        uniforms.lightDiffuse[3][3] = 0.0f;
+        uniforms.lightAtten[3][0] = radius;
+        uniforms.lightAtten[3][1] = force;
+    } else if (drawKind == Atmosphere_WaterDraw) {
+        float height, time, foam, glint, clarity, rain, sunset;
+        Atmosphere_WaterParams(height, time, foam, glint, clarity, rain, sunset);
+        uniforms.fogParams[2] = height;
+        uniforms.fogParams[3] = time;
+        uniforms.ambient[3] = foam;
+        uniforms.matEmissive[3] = glint;
+        uniforms.lightDiffuse[3][3] = 0.0f;
+        uniforms.lightAtten[3][0] = clarity;
+        uniforms.lightAtten[3][1] = rain;
+        uniforms.lightAtten[3][2] = sunset;
     }
 }
 
@@ -1924,6 +2221,32 @@ static void WriteBonePalette(uint8_t* dst, const C44Matrix* bones, uint32_t bone
     }
 }
 
+// ʕ •ᴥ•ʔ✿ The ring cursor returns to 0 when the frame slot is prepared. That is the only generation the device file can see ✿ ʕ •ᴥ•ʔ
+struct BonePaletteCache {
+    const C44Matrix* bones = nullptr;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    uint32_t count = 0;
+    uint32_t base = 0;
+    uint32_t epoch = 0;
+};
+
+static BonePaletteCache s_bonePalette;
+static uint32_t s_boneEpoch = 0;
+static int32_t s_boneRingOpen = 0;
+
+static void NoteBoneRing(VkDeviceSize cursor) {
+    if (cursor != 0) {
+        return;
+    }
+
+    if (s_boneRingOpen) {
+        s_boneEpoch++;
+    }
+
+    s_boneRingOpen = 1;
+}
+
 int32_t CGxDeviceVulkan::GpuSkinBind(const C44Matrix* bones, uint32_t boneCount) {
     this->m_skinActive = 0;
     this->m_skinStride = 0;
@@ -1935,6 +2258,16 @@ int32_t CGxDeviceVulkan::GpuSkinBind(const C44Matrix* bones, uint32_t boneCount)
 
     this->m_vk.PrepareFrame();
     VkFrame& frame = this->m_vk.Frame();
+    NoteBoneRing(frame.boneCursor);
+
+    // ʕ •ᴥ•ʔ✿ The next M2 geoset binds this same skeleton. Keep the slot so Draw's push matches and is skipped ✿ ʕ •ᴥ•ʔ
+    if (s_bonePalette.bones == bones && s_bonePalette.count == boneCount && s_bonePalette.epoch == s_boneEpoch && s_bonePalette.buffer == frame.bones.buffer && frame.bones.mapped) {
+        this->m_skinOffset = s_bonePalette.offset;
+        this->m_skinMatrixBase = s_bonePalette.base;
+        this->m_skinActive = 1;
+        return 1;
+    }
+
     VkDeviceSize cursor = 0;
     VkDeviceSize slot = 0;
 
@@ -1946,6 +2279,12 @@ int32_t CGxDeviceVulkan::GpuSkinBind(const C44Matrix* bones, uint32_t boneCount)
     frame.boneCursor = cursor + slot;
     this->m_skinOffset = cursor;
     this->m_skinMatrixBase = static_cast<uint32_t>(cursor / sizeof(C44Matrix));
+    s_bonePalette.bones = bones;
+    s_bonePalette.buffer = frame.bones.buffer;
+    s_bonePalette.offset = cursor;
+    s_bonePalette.count = boneCount;
+    s_bonePalette.base = this->m_skinMatrixBase;
+    s_bonePalette.epoch = s_boneEpoch;
     this->m_skinActive = 1;
     return 1;
 }
@@ -1961,6 +2300,7 @@ int32_t CGxDeviceVulkan::GpuSkinBindInstances(const C44Matrix* const* bones, uin
 
     this->m_vk.PrepareFrame();
     VkFrame& frame = this->m_vk.Frame();
+    NoteBoneRing(frame.boneCursor);
     VkDeviceSize cursor = 0;
     VkDeviceSize slot = 0;
 
@@ -2137,7 +2477,7 @@ void CGxDeviceVulkan::Draw(CGxBatch* batch, int32_t count) {
     int32_t forceWire = WowDecompVk_Wireframe() && depthTestOn;
     key.fill = (gameWire || forceWire) && this->m_vk.m_features.fillModeNonSolid;
     key.pass = this->m_passTarget != nullptr;
-    key.bindless = this->m_gpuDrawMode == 2 && this->m_bindless;
+    key.bindless = this->m_gpuDrawMode >= 2 && this->m_bindless;
 
     VkPipeline pipeline = this->IPipeline(key);
 
@@ -2170,6 +2510,11 @@ void CGxDeviceVulkan::Draw(CGxBatch* batch, int32_t count) {
         }
 
         if (texId) {
+            if (texId->m_apiSpecificData && !GxCpuPtrOk(texId->m_apiSpecificData)) {
+                texId->m_apiSpecificData = nullptr;
+                texId->m_needsCreation = 1;
+            }
+
             if (texId->m_needsCreation || !texId->m_apiSpecificData) {
                 this->ITexReady(texId);
             }
@@ -2179,7 +2524,8 @@ void CGxDeviceVulkan::Draw(CGxBatch* batch, int32_t count) {
             }
             texture = static_cast<VkTexture*>(texId->m_apiSpecificData);
 
-            if (!texture) {
+            if (!texture || !GxCpuPtrOk(texture)) {
+                texture = nullptr;
                 disableTexStage[tmu] = 1;
             }
         }
@@ -2217,7 +2563,8 @@ void CGxDeviceVulkan::Draw(CGxBatch* batch, int32_t count) {
         || this->m_uniformGpuDrawMode != this->m_gpuDrawMode
         || this->m_uniformSkin != this->m_skinThisDraw
         || this->m_uniformInfluences != static_cast<int32_t>(this->m_skinInfluences)
-        || this->m_uniformDisableTex != disableTex;
+        || this->m_uniformDisableTex != disableTex
+        || this->m_uniformDrawKind != Atmosphere_DrawKind();
 
     if (!rebuildUniforms && memcmp(this->m_lights, this->m_uniformLights, sizeof(this->m_lights))) {
         rebuildUniforms = 1;
@@ -2266,11 +2613,19 @@ void CGxDeviceVulkan::Draw(CGxBatch* batch, int32_t count) {
         this->m_uniformSkin = this->m_skinThisDraw;
         this->m_uniformInfluences = static_cast<int32_t>(this->m_skinInfluences);
         this->m_uniformDisableTex = disableTex;
+        this->m_uniformDrawKind = Atmosphere_DrawKind();
         memcpy(this->m_uniformLights, this->m_lights, sizeof(this->m_lights));
         // ʕ •ᴥ•ʔ✿ Dirty means changed since the last landed build. Tex stacks are cleared in IXformTex ✿ ʕ •ᴥ•ʔ
         this->m_xforms[GxXform_World].m_dirty = 0;
         this->m_xforms[GxXform_View].m_dirty = 0;
         this->m_xforms[GxXform_Projection].m_dirty = 0;
+    }
+
+    if (fabsf(this->m_projNative.d3) < 1.0e-4f && fabsf(this->m_projNative.c3) > 0.5f && !this->m_passTarget) {
+        CGxMatrixStack& view = this->m_xforms[GxXform_View];
+        this->m_atmosView = view.m_mtx[view.m_level];
+        this->m_atmosProj = this->m_projNative;
+        this->m_atmosWorldDraw = 1;
     }
 
     if (pipeline != this->m_boundPipeline) {
@@ -2557,7 +2912,9 @@ static float TerrainSlotFloat(uint32_t index) {
     return index == ~0u ? -1.0f : static_cast<float>(index);
 }
 
-int32_t CGxDeviceVulkan::DrawTerrainBatch(const GxTerrainDraw* draws, uint32_t count) {
+static_assert(offsetof(GxTerrainDraw, indexCount) == sizeof(GpuDrawItem), "terrain record");
+
+int32_t CGxDeviceVulkan::DrawTerrainBatch(const GxTerrainDraw* draws, uint32_t count, int32_t mode) {
     if (!draws || !count || !this->m_primIndexBuf || !this->m_vk.m_features.drawIndirectFirstInstance) {
         return 0;
     }
@@ -2572,33 +2929,29 @@ int32_t CGxDeviceVulkan::DrawTerrainBatch(const GxTerrainDraw* draws, uint32_t c
     }
 
     for (uint32_t i = 0; i < count; ++i) {
-        items[i] = {};
-        memcpy(items[i].world, &draws[i].world, sizeof(items[i].world));
-        memcpy(items[i].tex0, &draws[i].tex0, sizeof(items[i].tex0));
-        memcpy(items[i].tex1, &draws[i].tex1, sizeof(items[i].tex1));
-        memcpy(items[i].lightPos, draws[i].lightPos, sizeof(items[i].lightPos));
-        memcpy(items[i].lightDiffuse, draws[i].lightDiffuse, sizeof(items[i].lightDiffuse));
-        memcpy(items[i].lightAmbient, draws[i].lightAmbient, sizeof(items[i].lightAmbient));
-        memcpy(items[i].lightAtten, draws[i].lightAtten, sizeof(items[i].lightAtten));
+        // ʕ •ᴥ•ʔ✿ The ring is coherent and uncached. Patching one float there reads a whole line back off the bus ✿ ʕ •ᴥ•ʔ
+        GpuDrawItem item;
+        memcpy(&item, &draws[i].world, sizeof(item));
 
-        // -- ʕ •ᴥ•ʔ✿ ambient.w is the color slot. atten.w is the alpha slot. rgb and xyz stay the light ✿ ʕ •ᴥ•ʔ
         uint32_t layers = draws[i].layerCount > 4 ? 4 : draws[i].layerCount;
 
         if (layers) {
             for (uint32_t k = 0; k < 4; ++k) {
-                items[i].lightAmbient[k][3] = k < layers ? TerrainSlotFloat(draws[i].layerTex[k]) : -1.0f;
-                items[i].lightAtten[k][3] = k < layers ? TerrainSlotFloat(draws[i].layerAlpha[k]) : -1.0f;
+                item.lightAmbient[k][3] = k < layers ? TerrainSlotFloat(draws[i].layerTex[k]) : -1.0f;
+                item.lightAtten[k][3] = k < layers ? TerrainSlotFloat(draws[i].layerAlpha[k]) : -1.0f;
             }
         } else {
-            items[i].lightAmbient[0][3] = TerrainSlotFloat(draws[i].texIndex0);
-            items[i].lightAmbient[1][3] = -1.0f;
-            items[i].lightAmbient[2][3] = -1.0f;
-            items[i].lightAmbient[3][3] = -1.0f;
-            items[i].lightAtten[0][3] = TerrainSlotFloat(draws[i].texIndex1);
-            items[i].lightAtten[1][3] = -1.0f;
-            items[i].lightAtten[2][3] = -1.0f;
-            items[i].lightAtten[3][3] = -1.0f;
+            item.lightAmbient[0][3] = TerrainSlotFloat(draws[i].texIndex0);
+            item.lightAmbient[1][3] = -1.0f;
+            item.lightAmbient[2][3] = -1.0f;
+            item.lightAmbient[3][3] = -1.0f;
+            item.lightAtten[0][3] = TerrainSlotFloat(draws[i].texIndex1);
+            item.lightAtten[1][3] = -1.0f;
+            item.lightAtten[2][3] = -1.0f;
+            item.lightAtten[3][3] = -1.0f;
         }
+
+        memcpy(&items[i], &item, sizeof(item));
         commands[i].indexCount = draws[i].indexCount;
         commands[i].instanceCount = 1;
         commands[i].firstIndex = draws[i].firstIndex;
@@ -2606,7 +2959,7 @@ int32_t CGxDeviceVulkan::DrawTerrainBatch(const GxTerrainDraw* draws, uint32_t c
         commands[i].firstInstance = first + i;
     }
 
-    this->m_gpuDrawMode = 2;
+    this->m_gpuDrawMode = mode == 3 ? 3 : 2;
     this->m_indirectCount = count;
     this->m_indirectOffset = indirectOffset;
 

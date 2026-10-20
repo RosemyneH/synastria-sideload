@@ -14,6 +14,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <exception>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -45,7 +46,10 @@ inline int syn_clz(unsigned int value) {
 namespace {
 
 std::string g_perk_lua;
+std::string g_synergy_lua;
 int g_perk_count = 0;
+int g_perk_set_count = 0;
+int g_synergy_count = 0;
 
 constexpr uint32_t kMagic = 0x2838C53Au;
 constexpr int kLuaGlobals = -10002;
@@ -1251,20 +1255,26 @@ const char* quality_color(int quality) {
 }
 
 const char* item_icon(int display) {
-    if (display <= 0) {
-        return nullptr;
-    }
     if (!g_art) {
         syn_resolve("_ZN8CGItem_C15GetInventoryArtEi", reinterpret_cast<void**>(&g_art));
     }
-    if (!g_art) {
-        return nullptr;
+    const char* art = display > 0 && g_art ? g_art(display) : nullptr;
+    if (!art || !art[0]) {
+        art = "INV_Misc_QuestionMark";
     }
-    const char* path = g_art(display);
-    if (!path || !path[0]) {
-        return nullptr;
+    using LookupFn = const char* (*)(unsigned);
+    static LookupFn lookup = nullptr;
+    if (!lookup) {
+        syn_resolve("_Z20ClientDBStringLookupj", reinterpret_cast<void**>(&lookup));
     }
-    return path;
+    const char* path = lookup ? lookup(3) : nullptr;
+    static char texture[260];
+    if (path && path[0]) {
+        snprintf(texture, sizeof(texture), "%s\\%s", path, art);
+    } else {
+        snprintf(texture, sizeof(texture), "Interface\\Icons\\%s", art);
+    }
+    return texture;
 }
 
 int native_item_info(void* state) {
@@ -1980,7 +1990,7 @@ void run_scripts() {
         return;
     }
     if (!g_perk_lua.empty()) {
-        std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\nPerkMgrPerks = PerkMgrPerks or {}\n";
+        std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\nPerkMgrPerks = PerkMgrPerks or {}\nPerkMgrSets = PerkMgrSets or {}\n";
         wrapped += g_perk_lua;
         wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
         g_exec(wrapped.c_str(), "WoWExt.bin", "perks");
@@ -2003,8 +2013,65 @@ void run_scripts() {
     }
     int errors = 0;
     for (const LuaScript& script : g_scripts) {
+        std::string source = script.source;
+        const std::string class_id = "local function GetClassId()\r\n\tlocal name, keyword = UnitClass(\"player\")\r\n";
+        const std::string class_from_list =
+            "local function GetClassId()\r\n"
+            "\tlocal ok, id = pcall(CMCGetClassAt, 1)\r\n"
+            "\tif ok and type(id) == \"number\" and id > 0 then return id end\r\n"
+            "\tlocal name, keyword = UnitClass(\"player\")\r\n";
+        size_t at = source.find(class_id);
+        if (at != std::string::npos) {
+            source.replace(at, class_id.size(), class_from_list);
+        }
+        const std::string class_rows =
+            "\toffset_y, counter = UpdateLeftCat(frame.cele.catcla, offset_y, counter, GetClassId(), 5)\r\n"
+            "\tif frame.cele.catclb then\r\n"
+            "\t\tlocal scl = CMCGetClassAt(2)\r\n"
+            "\t\tif scl and scl ~= 0 and scl ~= GetClassId() then\r\n"
+            "\t\t\toffset_y, counter = UpdateLeftCat(frame.cele.catclb, offset_y, counter, scl, 5)\r\n"
+            "\t\tend\r\n"
+            "\tend\r\n"
+            "\toffset_y, counter = UpdateLeftCat(frame.cele.catmis, offset_y, counter, 19, 6)\r\n";
+        const std::string class_rows_both =
+            "\tlocal classA = CMCGetClassAt(1) or GetClassId()\r\n"
+            "\tlocal classB = CMCGetClassAt(2)\r\n"
+            "\tif frame.cele.catcla then frame.cele.catcla.isCollapsed = nil end\r\n"
+            "\toffset_y, counter = UpdateLeftCat(frame.cele.catcla, offset_y, counter, classA, 5)\r\n"
+            "\tif frame.cele.catclb and classB and classB ~= 0 and classB ~= classA then\r\n"
+            "\t\tframe.cele.catclb.isCollapsed = nil\r\n"
+            "\t\toffset_y, counter = UpdateLeftCat(frame.cele.catclb, offset_y, counter, classB, 5)\r\n"
+            "\tend\r\n"
+            "\tif frame.cele.catmis then frame.cele.catmis.isCollapsed = nil end\r\n"
+            "\toffset_y, counter = UpdateLeftCat(frame.cele.catmis, offset_y, counter, 19, 6)\r\n";
+        at = source.find(class_rows);
+        if (at != std::string::npos) {
+            source.replace(at, class_rows.size(), class_rows_both);
+        }
+        const std::string cat_title = "\tcat:SetText(c_catname[catidx] .. string.format(\" (%d/%d)\", acount, limit))\r\n";
+        const std::string cat_title_named =
+            "\tlocal title = c_catname[catidx]\r\n"
+            "\tif catidx == 5 and type(CMCGetClassName) == \"function\" then\r\n"
+            "\t\tlocal nm = CMCGetClassName(catid)\r\n"
+            "\t\tif nm and nm ~= \"\" then title = nm end\r\n"
+            "\tend\r\n"
+            "\tcat:SetText(title .. string.format(\" (%d/%d)\", acount, limit))\r\n";
+        at = source.find(cat_title);
+        if (at != std::string::npos) {
+            source.replace(at, cat_title.size(), cat_title_named);
+        }
+        const std::string limit_block =
+            "\t\tif catidx ~= 6 and (not GetPerkLimit(catidx) or GetActiveCount(perk.cat) >= GetPerkLimit(catidx)) then\r\n";
+        const std::string limit_open =
+            "\t\tlocal perkLimit = GetPerkLimit(catidx)\r\n"
+            "\t\tif catidx ~= 6 and perkLimit and perkLimit > 0 and GetActiveCount(perk.cat) >= perkLimit then\r\n";
+        at = 0;
+        while ((at = source.find(limit_block, at)) != std::string::npos) {
+            source.replace(at, limit_block.size(), limit_open);
+            at += limit_open.size();
+        }
         std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\n";
-        wrapped += script.source;
+        wrapped += source;
         wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
         g_exec(wrapped.c_str(), "WoWExt.bin", "synastria");
         if (!g_context || !g_get_field || !g_to_str || !g_set_top) {
@@ -2051,6 +2118,23 @@ void run_scripts() {
         "end)\n"
         "end\n",
         "WoWExt.bin", "view");
+    if (!g_synergy_lua.empty()) {
+        std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\nSynergyPerks = SynergyPerks or {}\n";
+        wrapped += g_synergy_lua;
+        wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
+        g_exec(wrapped.c_str(), "WoWExt.bin", "synergy");
+        if (g_context && g_get_field && g_to_str && g_set_top) {
+            void* state = g_context();
+            if (state) {
+                g_get_field(state, kLuaGlobals, "SynastriaScriptError");
+                const char* err = g_to_str(state, -1, nullptr);
+                if (err && err[0]) {
+                    log_line("synergy lua error: %s", err);
+                }
+                g_set_top(state, -2);
+            }
+        }
+    }
     g_scripts_ready = true;
     log_line("executed %zu WoWExt.bin lua containers errors=%d", g_scripts.size(), errors);
 }
@@ -2683,12 +2767,17 @@ bool read_perk(const uint8_t* data, int size, int& cursor) {
         if (cursor >= size) return false;
         sort = static_cast<uint32_t>(static_cast<int8_t>(data[cursor++]));
     }
+    uint32_t levels = 1;
     if (flags & 0x400u) {
         if (cursor >= size) return false;
-        ++cursor;
+        levels = data[cursor++];
     } else if (flags & 0x800u) {
-        if (cursor + 4 > size) return false;
-        cursor += 4;
+        if (!u32(levels)) return false;
+    }
+    if (levels == 0) {
+        levels = 1;
+    } else if (levels > 40) {
+        levels = 40;
     }
     if (flags & 0x1000u) {
         if (!u16(unlock)) return false;
@@ -2701,8 +2790,8 @@ bool read_perk(const uint8_t* data, int size, int& cursor) {
     if (flags & 0x8000u) {
         if (!read_varint(data, size, cursor, options)) return false;
     }
+    uint32_t extra = 0;
     if (flags & 0x10000u) {
-        uint32_t extra = 0;
         if (!read_varint(data, size, cursor, extra)) return false;
     }
     if (flags & 0x20000u) {
@@ -2716,10 +2805,18 @@ bool read_perk(const uint8_t* data, int size, int& cursor) {
     uint16_t mask = 0;
     memcpy(&mask, data + cursor, 2);
     cursor += 2;
+    float words[16]{};
+    bool present[16]{};
     for (int bit = 0; bit < 16; ++bit) {
-        if ((mask & (1u << bit)) && (cursor += 4) > size) {
+        if ((mask & (1u << bit)) == 0) {
+            continue;
+        }
+        if (cursor + 4 > size) {
             return false;
         }
+        memcpy(&words[bit], data + cursor, 4);
+        cursor += 4;
+        present[bit] = true;
     }
     const uint8_t* name = nullptr;
     const uint8_t* desc = nullptr;
@@ -2745,6 +2842,14 @@ bool read_perk(const uint8_t* data, int size, int& cursor) {
     line += std::to_string(req);
     line += ",sg=";
     line += std::to_string(group);
+    // ʕ •ᴥ•ʔ✿ "Balance: <class>" belongs on that class tab. Misc keeps the shared list. ✿ ʕ •ᴥ•ʔ
+    if (name_n >= 8 && memcmp(name, "Balance:", 8) == 0 && req && (req & (req - 1u)) == 0u && req <= 1024u) {
+        int class_id = 0;
+        for (uint32_t bit = req; bit; bit >>= 1) {
+            ++class_id;
+        }
+        cat = class_id;
+    }
     line += ",flags=";
     line += std::to_string(perk_flags);
     line += ",options=";
@@ -2761,9 +2866,607 @@ bool read_perk(const uint8_t* data, int size, int& cursor) {
     line += std::to_string(y);
     line += ",unlock=";
     line += std::to_string(unlock);
-    line += ",lvflags=0,levels={{amounts={0,0,0,0,0},amounts2={0,0,0,0,0}}}}\n";
+    line += ",lvflags=";
+    line += std::to_string(extra);
+    line += ",levels={";
+    auto append_num = [](std::string& out, float value) {
+        float rounded = std::round(value);
+        if (std::fabs(value - rounded) < 0.001f) {
+            out += std::to_string(static_cast<int>(rounded));
+            return;
+        }
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.4g", value);
+        out += buf;
+    };
+    auto rank_amount = [](float start, float end, bool has_start, bool has_end, uint32_t index, uint32_t count) {
+        if (!has_start && !has_end) {
+            return 0.0f;
+        }
+        if (!has_start) {
+            start = end;
+        }
+        if (!has_end) {
+            end = start;
+        }
+        if (count <= 1 || index == 0) {
+            return start;
+        }
+        if (index + 1 >= count) {
+            return end;
+        }
+        float t = static_cast<float>(index) / static_cast<float>(count - 1);
+        return start + (end - start) * t;
+    };
+    for (uint32_t level = 0; level < levels; ++level) {
+        if (level) {
+            line += ',';
+        }
+        line += "{amounts={";
+        for (int slot = 0; slot < 4; ++slot) {
+            if (slot) {
+                line += ',';
+            }
+            int bit = slot * 4;
+            append_num(line, rank_amount(words[bit], words[bit + 1], present[bit], present[bit + 1], level, levels));
+        }
+        line += ",0},amounts2={";
+        for (int slot = 0; slot < 4; ++slot) {
+            if (slot) {
+                line += ',';
+            }
+            int bit = slot * 4;
+            bool has_start = present[bit + 2];
+            bool has_end = present[bit + 3];
+            float start = words[bit + 2];
+            float end = words[bit + 3];
+            if (!has_start && !has_end) {
+                has_start = present[bit];
+                has_end = present[bit + 1];
+                start = words[bit];
+                end = words[bit + 1];
+            }
+            append_num(line, rank_amount(start, end, has_start, has_end, level, levels));
+        }
+        line += ",0}}";
+    }
+    line += "}}\n";
     g_perk_lua += line;
     ++g_perk_count;
+    return true;
+}
+
+bool perk_text_ok(const uint8_t* text, int length) {
+    for (int i = 0; i < length; ++i) {
+        unsigned char bite = text[i];
+        if (bite < 32 && bite != '\n' && bite != '\r' && bite != '\t') {
+            return false;
+        }
+    }
+    return length > 0;
+}
+
+void lua_amount(std::string& out, float value) {
+    float rounded = std::round(value);
+    if (std::fabs(value - rounded) < 0.001f) {
+        out += std::to_string(static_cast<int>(rounded));
+        return;
+    }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4g", value);
+    out += buf;
+}
+
+// ʕ •ᴥ•ʔ✿ Set records follow the perk array. Tag bit 0x40 carries amount pairs for $0..$3. ✿ ʕ •ᴥ•ʔ
+bool read_perk_sets(const uint8_t* data, int size, int cursor, int& end_at) {
+    if (cursor + 4 > size) {
+        return false;
+    }
+    uint32_t nsets = 0;
+    memcpy(&nsets, data + cursor, 4);
+    cursor += 4;
+    if (nsets == 0 || nsets > 64) {
+        return false;
+    }
+    std::string lua;
+    for (uint32_t set_index = 0; set_index < nsets; ++set_index) {
+        if (cursor + 3 > size) {
+            return false;
+        }
+        uint8_t set_flags = data[cursor++];
+        uint32_t set_id = 0;
+        if (set_flags & 1u) {
+            if (cursor >= size) {
+                return false;
+            }
+            set_id = data[cursor++];
+        } else if (set_flags & 2u) {
+            if (cursor + 2 > size) {
+                return false;
+            }
+            uint16_t wide = 0;
+            memcpy(&wide, data + cursor, 2);
+            cursor += 2;
+            set_id = wide;
+        } else {
+            if (cursor + 4 > size) {
+                return false;
+            }
+            memcpy(&set_id, data + cursor, 4);
+            cursor += 4;
+        }
+        if (set_id == 0 || cursor >= size) {
+            return false;
+        }
+        if (data[cursor] <= 32) {
+            ++cursor;
+        }
+        auto bonus_header = [&](int pos, uint16_t& tag, uint8_t& count, uint16_t& desc_n, const uint8_t*& desc) {
+            if (pos + 5 > size) {
+                return false;
+            }
+            memcpy(&tag, data + pos, 2);
+            count = data[pos + 2];
+            memcpy(&desc_n, data + pos + 3, 2);
+            if (tag == 0 || count == 0 || count > 16 || desc_n > 500 || pos + 5 + desc_n > size) {
+                return false;
+            }
+            desc = data + pos + 5;
+            return !desc_n || perk_text_ok(desc, desc_n);
+        };
+        auto name_at = [&](int pos) {
+            auto one = [&](bool colored) {
+                int at = pos + (colored ? 4 : 0);
+                if (at + 2 > size) {
+                    return false;
+                }
+                uint16_t length = 0;
+                memcpy(&length, data + at, 2);
+                return length >= 1 && length <= 48 && at + 2 + length <= size && perk_text_ok(data + at + 2, length);
+            };
+            return one(false) || one(true);
+        };
+        uint16_t perk_ids[32];
+        int perk_count = 0;
+        bool skipped = false;
+        while (perk_count < 32 && cursor + 2 <= size) {
+            uint16_t tag = 0;
+            uint8_t count = 0;
+            uint16_t desc_n = 0;
+            const uint8_t* desc = nullptr;
+            if (bonus_header(cursor, tag, count, desc_n, desc)) {
+                break;
+            }
+            uint16_t perk_id = 0;
+            memcpy(&perk_id, data + cursor, 2);
+            if (perk_id >= 1 && perk_id <= 8000) {
+                perk_ids[perk_count++] = perk_id;
+                cursor += 2;
+                continue;
+            }
+            if (!skipped) {
+                skipped = true;
+                ++cursor;
+                continue;
+            }
+            return false;
+        }
+        if (perk_count == 0) {
+            return false;
+        }
+        struct Bonus {
+            uint8_t count;
+            uint32_t perk;
+            float amounts[4];
+            float amounts2[4];
+            const uint8_t* desc;
+            uint16_t desc_n;
+        };
+        Bonus bonuses[16];
+        int nbonus = 0;
+        while (nbonus < 16) {
+            uint16_t tag = 0;
+            uint8_t count = 0;
+            uint16_t desc_n = 0;
+            const uint8_t* desc = nullptr;
+            if (!bonus_header(cursor, tag, count, desc_n, desc)) {
+                break;
+            }
+            int body = cursor + 5 + desc_n;
+            int order[5];
+            int norder = 0;
+            auto push_order = [&](int pairs) {
+                for (int i = 0; i < norder; ++i) {
+                    if (order[i] == pairs) {
+                        return;
+                    }
+                }
+                order[norder++] = pairs;
+            };
+            if (tag & 0x40) {
+                int slots = 1;
+                for (int i = 0; i + 1 < desc_n; ++i) {
+                    if (desc[i] == '$' && desc[i + 1] >= '0' && desc[i + 1] <= '3') {
+                        int slot = desc[i + 1] - '0' + 1;
+                        if (slot > slots) {
+                            slots = slot;
+                        }
+                    }
+                }
+                push_order(slots);
+                for (int pairs = 1; pairs <= 4; ++pairs) {
+                    push_order(pairs);
+                }
+            } else {
+                push_order(0);
+            }
+            int chosen = -1;
+            uint32_t perk = 0;
+            for (int i = 0; i < norder; ++i) {
+                int end = body + order[i] * 8;
+                if (end + 4 > size) {
+                    continue;
+                }
+                uint32_t candidate = 0;
+                memcpy(&candidate, data + end, 4);
+                if (candidate < 1 || candidate > 30000) {
+                    continue;
+                }
+                uint16_t next_tag = 0;
+                uint8_t next_count = 0;
+                uint16_t next_desc_n = 0;
+                const uint8_t* next_desc = nullptr;
+                if (bonus_header(end + 4, next_tag, next_count, next_desc_n, next_desc) || name_at(end + 4)) {
+                    chosen = order[i];
+                    perk = candidate;
+                    break;
+                }
+            }
+            if (chosen < 0) {
+                break;
+            }
+            Bonus bonus{};
+            bonus.count = count;
+            bonus.perk = perk;
+            bonus.desc = desc;
+            bonus.desc_n = desc_n;
+            for (int slot = 0; slot < chosen && slot < 4; ++slot) {
+                memcpy(&bonus.amounts[slot], data + body + slot * 8, 4);
+                memcpy(&bonus.amounts2[slot], data + body + slot * 8 + 4, 4);
+            }
+            bonuses[nbonus++] = bonus;
+            cursor = body + chosen * 8 + 4;
+        }
+        if (nbonus == 0) {
+            return false;
+        }
+        auto take_name = [&](bool colored, uint32_t& color, const uint8_t*& name, uint16_t& name_n, int& next) {
+            int pos = cursor;
+            color = 0;
+            if (colored) {
+                if (pos + 4 > size) {
+                    return false;
+                }
+                memcpy(&color, data + pos, 4);
+                pos += 4;
+            }
+            if (pos + 2 > size) {
+                return false;
+            }
+            memcpy(&name_n, data + pos, 2);
+            if (name_n < 1 || name_n > 48 || pos + 2 + name_n > size || !perk_text_ok(data + pos + 2, name_n)) {
+                return false;
+            }
+            name = data + pos + 2;
+            next = pos + 2 + name_n;
+            return true;
+        };
+        uint32_t color = 0;
+        const uint8_t* name = nullptr;
+        uint16_t name_n = 0;
+        int next = cursor;
+        if (!take_name(false, color, name, name_n, next) && !take_name(true, color, name, name_n, next)) {
+            return false;
+        }
+        cursor = next;
+        lua += "PerkMgrSets[";
+        lua += std::to_string(set_id);
+        lua += "]={id=";
+        lua += std::to_string(set_id);
+        lua += ",name=";
+        lua_quote(lua, name, name_n);
+        lua += ",color=";
+        lua += std::to_string(color);
+        lua += ",perks={";
+        for (int i = 0; i < perk_count; ++i) {
+            if (i) {
+                lua += ',';
+            }
+            lua += std::to_string(perk_ids[i]);
+        }
+        lua += "},bonus={";
+        for (int i = 0; i < nbonus; ++i) {
+            if (i) {
+                lua += ',';
+            }
+            const Bonus& bonus = bonuses[i];
+            lua += "{count=";
+            lua += std::to_string(bonus.count);
+            lua += ",perkid=";
+            lua += std::to_string(bonus.perk);
+            lua += ",desc=";
+            lua_quote(lua, bonus.desc, bonus.desc_n);
+            lua += ",amounts={";
+            for (int slot = 0; slot < 4; ++slot) {
+                if (slot) {
+                    lua += ',';
+                }
+                lua_amount(lua, bonus.amounts[slot]);
+            }
+            lua += ",0},amounts2={";
+            for (int slot = 0; slot < 4; ++slot) {
+                if (slot) {
+                    lua += ',';
+                }
+                lua_amount(lua, bonus.amounts2[slot]);
+            }
+            lua += ",0}}";
+        }
+        lua += "}}\n";
+        log_line("perk set %u %.*s bonuses=%d perks=%d", set_id, static_cast<int>(name_n), reinterpret_cast<const char*>(name), nbonus, perk_count);
+    }
+    g_perk_lua += lua;
+    g_perk_set_count += static_cast<int>(nsets);
+    end_at = cursor;
+    return true;
+}
+
+bool skip_perk_task(const uint8_t* data, int size, int& cursor) {
+    if (cursor + 2 > size) {
+        return false;
+    }
+    uint16_t flags = 0;
+    memcpy(&flags, data + cursor, 2);
+    cursor += 2;
+    auto skip = [&](int bytes) {
+        if (cursor + bytes > size) {
+            return false;
+        }
+        cursor += bytes;
+        return true;
+    };
+    if (flags & 1u) {
+        if (!skip(2)) return false;
+    } else if (!skip(4)) {
+        return false;
+    }
+    if ((flags & 8u) == 0) {
+        if (!skip(flags & 0x10u ? 1 : 4)) return false;
+    }
+    if ((flags & 0x20u) && !skip(4)) return false;
+    if ((flags & 0x40u) && !skip(4)) return false;
+    if ((flags & 0x80u) && !skip(4)) return false;
+    if (flags & 0x100u) {
+        if (!skip(1)) return false;
+    } else if ((flags & 0x200u) && !skip(4)) {
+        return false;
+    }
+    if (flags & 0x400u) {
+        for (int i = 0; i < 5 && cursor < size; ++i) {
+            uint8_t bite = data[cursor++];
+            if ((bite & 0x80) == 0) {
+                break;
+            }
+        }
+    }
+    if (cursor + 2 > size) {
+        return false;
+    }
+    uint16_t length = 0;
+    memcpy(&length, data + cursor, 2);
+    cursor += 2;
+    if (length > 800 || cursor + length > size) {
+        return false;
+    }
+    cursor += length;
+    return true;
+}
+
+bool read_perk_synergies(const uint8_t* data, int size, int cursor) {
+    if (cursor + 4 > size) {
+        return false;
+    }
+    uint32_t tasks = 0;
+    memcpy(&tasks, data + cursor, 4);
+    cursor += 4;
+    if (tasks > 4000) {
+        return false;
+    }
+    for (uint32_t i = 0; i < tasks; ++i) {
+        if (!skip_perk_task(data, size, cursor)) {
+            return false;
+        }
+    }
+    if (cursor + 4 > size) {
+        return false;
+    }
+    uint32_t names = 0;
+    memcpy(&names, data + cursor, 4);
+    cursor += 4;
+    if (names > 4000) {
+        return false;
+    }
+    for (uint32_t i = 0; i < names; ++i) {
+        if (cursor + 3 > size) {
+            return false;
+        }
+        ++cursor;
+        uint16_t length = 0;
+        memcpy(&length, data + cursor, 2);
+        cursor += 2;
+        if (length > 200 || cursor + length + 1 > size) {
+            return false;
+        }
+        cursor += length + 1;
+    }
+    if (cursor + 8 > size) {
+        return false;
+    }
+    uint32_t pad = 0;
+    uint32_t count = 0;
+    memcpy(&pad, data + cursor, 4);
+    memcpy(&count, data + cursor + 4, 4);
+    cursor += 8;
+    if (pad != 0 || count > 4000) {
+        return false;
+    }
+    std::string lua;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (cursor + 2 > size) {
+            return false;
+        }
+        uint16_t flags = 0;
+        memcpy(&flags, data + cursor, 2);
+        cursor += 2;
+        uint32_t raw = 0;
+        for (int step = 0; step < 5 && cursor < size; ++step) {
+            uint8_t bite = data[cursor++];
+            raw = (raw << 7) | (bite & 0x7fu);
+            if ((bite & 0x80) == 0) {
+                break;
+            }
+        }
+        int32_t sid = static_cast<int32_t>(raw >> 1);
+        if (raw & 1u) {
+            sid = -sid;
+        }
+        if (cursor + 2 > size) {
+            return false;
+        }
+        uint8_t index = data[cursor++];
+        uint8_t cl1 = data[cursor++];
+        uint8_t cl2 = 0;
+        uint16_t clm = 0;
+        uint32_t text_id = 0;
+        const uint8_t* text = nullptr;
+        uint16_t text_n = 0;
+        uint32_t entry_flags = 4;
+        uint8_t pieces = 0;
+        float number = 0;
+        uint32_t spells[16];
+        int nspells = 0;
+        uint32_t qv = 0;
+        float qv2 = 0;
+        if (flags & 1u) {
+            if (cursor >= size) return false;
+            cl2 = data[cursor++];
+        }
+        if (flags & 2u) {
+            if (cursor + 2 > size) return false;
+            memcpy(&clm, data + cursor, 2);
+            cursor += 2;
+        }
+        if (flags & 4u) {
+            for (int step = 0; step < 5 && cursor < size; ++step) {
+                uint8_t bite = data[cursor++];
+                text_id = (text_id << 7) | (bite & 0x7fu);
+                if ((bite & 0x80) == 0) break;
+            }
+        }
+        if (flags & 8u) {
+            if (cursor + 2 > size) return false;
+            memcpy(&text_n, data + cursor, 2);
+            cursor += 2;
+            if (text_n > 800 || cursor + text_n > size) return false;
+            text = data + cursor;
+            cursor += text_n;
+        }
+        if (flags & 0x10u) {
+            if (cursor + 4 > size) return false;
+            memcpy(&entry_flags, data + cursor, 4);
+            cursor += 4;
+        }
+        if (flags & 0x20u) {
+            if (cursor >= size) return false;
+            pieces = data[cursor++];
+        }
+        if (flags & 0x40u) {
+            if (cursor + 4 > size) return false;
+            memcpy(&number, data + cursor, 4);
+            cursor += 4;
+        }
+        if (flags & 0x80u) {
+            if (cursor >= size) return false;
+            nspells = data[cursor++];
+            if (nspells > 16 || cursor + nspells * 4 > size) return false;
+            for (int spell = 0; spell < nspells; ++spell) {
+                memcpy(&spells[spell], data + cursor, 4);
+                cursor += 4;
+            }
+        }
+        if (flags & 0x100u) {
+            if (cursor + 4 > size) return false;
+            memcpy(&qv, data + cursor, 4);
+            cursor += 4;
+        }
+        if (flags & 0x200u) {
+            if (cursor + 4 > size) return false;
+            memcpy(&qv2, data + cursor, 4);
+            cursor += 4;
+        }
+        lua += "_addPerkSynergy(";
+        lua += std::to_string(sid);
+        lua += ",{id=";
+        lua += std::to_string(sid);
+        lua += ",index=";
+        lua += std::to_string(index);
+        lua += ",cl1=";
+        lua += std::to_string(cl1);
+        if (cl2) {
+            lua += ",cl2=";
+            lua += std::to_string(cl2);
+        }
+        if (clm) {
+            lua += ",clm=";
+            lua += std::to_string(clm);
+        }
+        lua += ",flags=";
+        lua += std::to_string(entry_flags);
+        if (text && text_n) {
+            lua += ",t=";
+            lua_quote(lua, text, text_n);
+        } else if (text_id) {
+            lua += ",t=";
+            lua += std::to_string(text_id);
+        }
+        if (pieces) {
+            lua += ",s=";
+            lua += std::to_string(pieces);
+        }
+        if (number != 0) {
+            lua += ",num=";
+            lua_amount(lua, number);
+        }
+        if (nspells) {
+            lua += ",sp={";
+            for (int spell = 0; spell < nspells; ++spell) {
+                if (spell) lua += ',';
+                lua += std::to_string(spells[spell]);
+            }
+            lua += '}';
+        }
+        if (qv) {
+            lua += ",qv=";
+            lua += std::to_string(qv);
+        }
+        if (qv2 != 0) {
+            lua += ",qv2=";
+            lua_amount(lua, qv2);
+        }
+        lua += "})\n";
+    }
+    g_synergy_lua += lua;
+    g_synergy_count += static_cast<int>(count);
     return true;
 }
 
@@ -3036,7 +3739,10 @@ void publish_spell_records() {
     done = true;
     g_skill_adds.clear();
     g_perk_lua.clear();
+    g_synergy_lua.clear();
     g_perk_count = 0;
+    g_perk_set_count = 0;
+    g_synergy_count = 0;
     char path[1024];
     snprintf(path, sizeof(path), "%s/WoWExt.bin", g_root);
     FILE* file = fopen(path, "rb");
@@ -3259,6 +3965,10 @@ void publish_spell_records() {
                 if (!perks_ok) {
                     break;
                 }
+                int after_sets = at;
+                if (read_perk_sets(cursor, plain_size, at, after_sets)) {
+                    read_perk_synergies(cursor, plain_size, after_sets);
+                }
                 at = plain_size;
                 continue;
             }
@@ -3355,8 +4065,8 @@ void publish_spell_records() {
                  id, spell_name ? spell_name : "", i32(0x10), i32(0x14), i32(0x04), i32(0x74), i32(0x78),
                  i32(0x11c), i32(0x214), i32(0x218));
     }
-    log_line("spell db names=%d text=%d icons=%d copies=%d auras=%d skills=%zu perks=%d",
-             names, described, icons, copies, auras, g_skill_adds.size(), g_perk_count);
+    log_line("spell db names=%d text=%d icons=%d copies=%d auras=%d skills=%zu perks=%d sets=%d synergies=%d",
+             names, described, icons, copies, auras, g_skill_adds.size(), g_perk_count, g_perk_set_count, g_synergy_count);
 }
 
 void publish_item_records() {
@@ -3873,7 +4583,7 @@ void apply_item_block(PktReader& in) {
     uint16_t count = in.u16();
     uint32_t key = 0;
     for (uint16_t i = 0; i < count && in.ok; ++i) {
-        key += in.uleb();
+        key += in.be7();
         uint8_t flags = in.u8();
         int f04 = -1;
         int f08 = flags & 1;
@@ -3885,13 +4595,13 @@ void apply_item_block(PktReader& in) {
         if (flags & 2) {
             f04 = in.u8();
         } else if (flags & 4) {
-            f04 = static_cast<int>(in.uleb());
+            f04 = static_cast<int>(in.be7());
         }
         if (flags & 8) {
-            f0c = in.uleb();
+            f0c = in.be7();
         }
         if (flags & 0x10) {
-            f10 = in.uleb();
+            f10 = in.be7();
         }
         if (flags & 0x20) {
             f18 = in.u8();
@@ -3901,7 +4611,7 @@ void apply_item_block(PktReader& in) {
             has18 = true;
         }
         if (flags & 0x80) {
-            f14 = in.uleb();
+            f14 = in.be7();
         }
         if (!in.ok) {
             return;
@@ -3929,6 +4639,7 @@ void apply_item_block(PktReader& in) {
     for (uint8_t i = 0; i < listed && in.ok; ++i) {
         set_num(2, i + 1, in.u8());
     }
+    log_line("init-game perks learned=%zu active=%zu", g_game[1].nums.size(), g_game[3].nums.size());
 }
 
 void apply_attune_block(PktReader& in) {
@@ -3950,7 +4661,7 @@ void apply_attune_block(PktReader& in) {
     uint16_t count = in.u16();
     uint32_t key = 0;
     for (uint16_t i = 0; i < count && in.ok; ++i) {
-        key += in.uleb();
+        key += in.be7();
         int raw = static_cast<int16_t>(in.u16());
         set_num(11, static_cast<int>(key), raw * 0.01);
         ++written;

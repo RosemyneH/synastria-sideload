@@ -20,7 +20,7 @@ enum GxFontFlags {
 };
 
 // ʕ •ᴥ•ʔ✿ Atlas texels of signed distance around the em. Ffp.frag and the 256px page use the same range ✿ ʕ •ᴥ•ʔ
-static constexpr float kGxFontMsdfRange = 4.0f;
+float GxuFontMsdfRange();
 
 struct KERNINGHASHKEY {
     /* 0000 */ uint32_t m_code;
@@ -49,6 +49,7 @@ struct CGxFont : public TSLinkedNode<CGxFont> {
     /* 0188 */ float m_pixelsPerUnit;
     /* 018C */ TEXTURECACHE m_textureCache[8];
     /* 024C */ uint32_t m_pixelSize;
+    uint32_t m_nominalSize;
 
     CGxFont();
     ~CGxFont();

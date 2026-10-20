@@ -2,12 +2,16 @@
 #include "features.h"
 #include "sym.h"
 
+#include <lz4.h>
+
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #if defined(_MSC_VER)
 #define strdup _strdup
@@ -23,13 +27,20 @@
 #endif
 
 #if !defined(SYNASTRIA_EMBED)
+#include <dlfcn.h>
 #include <execinfo.h>
 #include <signal.h>
 #include <sys/mman.h>
+#include <ucontext.h>
 #endif
 
 #ifdef SYNASTRIA_EMBED
+#include "Engine/Source/Frame/CSimpleTop.h"
 #include "WoW/Source/Magic/MagicClient/SpellTable.h"
+#include "WoW/Source/Object/ObjectClient/Unit_C.h"
+#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
+#include "WoW/Source/Ui/WorldFrame.h"
+#include "WoW/Source/UIUtil/InputControl.h"
 void syn_bind_client();
 #endif
 
@@ -221,7 +232,7 @@ FILE* g_log = nullptr;
 uint32_t g_token = 0;
 bool g_handler_ready = false;
 bool g_announced = false;
-std::string g_pending_script;
+std::vector<std::string> g_pending_scripts;
 bool g_create_ready = false;
 bool g_lua_ready = false;
 bool g_login_error_logged = false;
@@ -406,11 +417,13 @@ void send_presence() {
 }
 
 void run_server_script() {
-    if (g_pending_script.empty() || !g_lua_execute) {
+    if (g_pending_scripts.empty() || !g_lua_execute) {
         return;
     }
+    std::string script = std::move(g_pending_scripts.front());
+    g_pending_scripts.erase(g_pending_scripts.begin());
     std::string wrapped = "SynastriaScriptError = nil\nlocal ok, err = pcall(function()\n";
-    wrapped += g_pending_script;
+    wrapped += script;
     wrapped += "\nend)\nif not ok then SynastriaScriptError = tostring(err) end\n";
     g_lua_execute(wrapped.c_str(), "WoWExtPkt", "synastria");
     if (g_lua_context && g_lua_getfield && g_lua_tolstring && g_lua_settop) {
@@ -424,18 +437,22 @@ void run_server_script() {
             g_lua_settop(state, -2);
         }
     }
-    if (g_pending_script.size() < 180) {
-        std::string text = g_pending_script;
-        for (char& bite : text) {
+    if (script.size() < 180) {
+        for (char& bite : script) {
             if (bite == '\n' || bite == '\r') {
                 bite = ' ';
             }
         }
-        log_line("server script %zu bytes %s", g_pending_script.size(), text.c_str());
+        log_line("server script %zu bytes %s", script.size(), script.c_str());
     } else {
-        log_line("server script %zu bytes", g_pending_script.size());
+        log_line("server script %zu bytes", script.size());
     }
-    g_pending_script.clear();
+}
+
+void drain_server_scripts() {
+    while (!g_pending_scripts.empty() && g_lua_execute) {
+        run_server_script();
+    }
 }
 
 void send_cache_reply(const uint32_t* ids, int count) {
@@ -485,6 +502,263 @@ const uint8_t* payload(void* msg, uint32_t* nbytes) {
     return store->data + (store->read - store->base);
 }
 
+#ifdef SYNASTRIA_EMBED
+struct ByteReader {
+    const uint8_t* data;
+    uint32_t left;
+    bool ok = true;
+
+    uint32_t u32() {
+        if (left < 4) {
+            ok = false;
+            return 0;
+        }
+        uint32_t value = 0;
+        memcpy(&value, data, 4);
+        data += 4;
+        left -= 4;
+        return value;
+    }
+
+    float f32() {
+        uint32_t bits = u32();
+        float value = 0.0f;
+        memcpy(&value, &bits, 4);
+        return value;
+    }
+};
+
+void put_bits(void* raw, float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, 4);
+    g_put_u32(raw, bits);
+}
+
+void send_raw(unsigned char* raw) {
+    g_finalize(raw);
+    if (g_net_send && g_net) {
+        g_net_send(g_net, raw);
+    } else if (g_send) {
+        g_send(raw);
+    }
+    g_dtor(raw);
+}
+
+CGUnit_C* active_player() {
+    return static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
+}
+
+int trace_segment(const C3Vector& start, const C3Vector& end, HITTESTRESULT* result) {
+    CGWorldFrame* frame = CGWorldFrame::s_currentWorldFrame;
+    if (!frame) {
+        return 0;
+    }
+    return frame->HitTest(start, end, 6, result);
+}
+
+bool charge_contact(const C3Vector& origin, float facing, float distance, C3Vector* contact) {
+    if (!(distance > 3.0f) || !CGWorldFrame::s_currentWorldFrame) {
+        return false;
+    }
+    float reach = distance < 10.0f ? distance : 10.0f;
+    float best = 0.0f;
+    bool found = false;
+    for (int step = 0; step <= 10; ++step) {
+        float scale = reach;
+        if (step > 0) {
+            scale = reach * (1.0f - static_cast<float>(step) / 11.0f);
+        }
+        if (!(scale > 0.0f)) {
+            continue;
+        }
+        C3Vector end(origin.x + sinf(facing) * scale, origin.y + cosf(facing) * scale, origin.z);
+        C3Vector from = origin;
+        from.z += 1.5f;
+        end.z += 1.5f;
+        HITTESTRESULT hit{};
+        int kind = trace_segment(from, end, &hit);
+        if (!kind) {
+            float span = sqrtf((end.x - from.x) * (end.x - from.x) + (end.y - from.y) * (end.y - from.y) + (end.z - from.z) * (end.z - from.z));
+            float slice = span / 5.0f;
+            for (int band = 1; band <= 5 && !kind; ++band) {
+                C3Vector lowered = end;
+                lowered.z = from.z - slice * static_cast<float>(band);
+                kind = trace_segment(from, lowered, &hit);
+            }
+        }
+        if (!kind) {
+            continue;
+        }
+        C3Vector point = hit.m_point;
+        float dx = point.x - from.x;
+        float dy = point.y - from.y;
+        float dz = point.z - from.z;
+        float length = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (length > 0.0f) {
+            float pull = 1.0f + 0.5f * (1.0f - fabsf(from.z - point.z) / length);
+            point.x -= dx / length * pull;
+            point.y -= dy / length * pull;
+            point.z -= dz / length * pull;
+        }
+        HITTESTRESULT ground{};
+        C3Vector top = point;
+        C3Vector bottom = point;
+        top.z += 2.04f;
+        bottom.z -= reach;
+        if (!trace_segment(top, bottom, &ground) || point.z + 0.001f < ground.m_point.z) {
+            continue;
+        }
+        if (point.z > ground.m_point.z + 0.01f) {
+            point.z = ground.m_point.z + 0.01f;
+        }
+        dx = point.x - origin.x;
+        dy = point.y - origin.y;
+        dz = point.z - origin.z;
+        length = sqrtf(dx * dx + dy * dy + dz * dz);
+        float horizontal = length;
+        if (length > 3.0f) {
+            horizontal = length * (1.0f - fabsf(dz) / length);
+        } else {
+            horizontal = 0.0f;
+        }
+        if (horizontal > best) {
+            best = horizontal;
+            *contact = point;
+            found = true;
+        }
+    }
+    return found;
+}
+
+void answer_collision(const uint8_t* rest, uint32_t left) {
+    if (!can_send() || !rest || left < 1) {
+        return;
+    }
+    ByteReader reader{rest, left};
+    uint8_t mode = reader.data[0];
+    reader.data += 1;
+    reader.left -= 1;
+    if (mode == 1) {
+        uint32_t id = reader.u32();
+        float facing = reader.f32();
+        float distance = reader.f32();
+        uint32_t flags = reader.u32();
+        CGUnit_C* unit = active_player();
+        if (unit && (flags & 1u)) {
+            facing += unit->GetFacing();
+        }
+        uint32_t visual = 0;
+        if (flags & 2u) {
+            visual = reader.u32();
+            reader.u32();
+        }
+        C3Vector contact(0.0f, 0.0f, 0.0f);
+        bool hit = false;
+        if (unit && reader.ok) {
+            hit = charge_contact(unit->GetPosition(), facing, distance, &contact);
+        }
+        alignas(16) unsigned char raw[256];
+        memset(raw, 0, sizeof(raw));
+        g_ctor(raw);
+        g_put_u32(raw, static_cast<uint32_t>(kOpcode));
+        g_put_u8(raw, 0x1b);
+        g_put_u8(raw, 1);
+        g_put_u32(raw, id);
+        if ((flags & 0xcu) == 0) {
+            g_put_u8(raw, hit ? 1 : 0);
+            if (hit) {
+                put_bits(raw, contact.x);
+                put_bits(raw, contact.y);
+                put_bits(raw, contact.z);
+                put_bits(raw, unit ? unit->GetFacing() : 0.0f);
+            }
+            send_raw(raw);
+        } else if ((flags & 8u) == 0 && !hit) {
+            g_put_u8(raw, 0);
+            send_raw(raw);
+        } else {
+            g_dtor(raw);
+        }
+        if (hit && unit) {
+            CGInputControl::JuggernautHit();
+            unit->m_movementData.StopMove();
+            unit->m_movementData.OnMoveStopLocal(CSimpleTop::s_eventTime);
+            if (visual) {
+                alignas(16) unsigned char snap[256];
+                memset(snap, 0, sizeof(snap));
+                g_ctor(snap);
+                C3Vector previous = unit->GetPosition();
+                float look = unit->GetFacing();
+                g_put_u32(snap, static_cast<uint32_t>(kOpcode));
+                g_put_u8(snap, 0x1b);
+                g_put_u8(snap, 4);
+                g_put_u32(snap, visual);
+                put_bits(snap, previous.x);
+                put_bits(snap, previous.y);
+                put_bits(snap, previous.z);
+                put_bits(snap, look);
+                put_bits(snap, contact.x);
+                put_bits(snap, contact.y);
+                put_bits(snap, contact.z);
+                put_bits(snap, look);
+                send_raw(snap);
+            }
+        }
+        log_line("collision mode=1 id=%u flags=%#x dist=%.2f hit=%d visual=%u", id, flags, static_cast<double>(distance), hit ? 1 : 0, visual);
+        return;
+    }
+    if (mode == 2) {
+        uint32_t id = reader.u32();
+        uint32_t flags = reader.u32();
+        C3Vector start(reader.f32(), reader.f32(), reader.f32());
+        C3Vector end(reader.f32(), reader.f32(), reader.f32());
+        CGUnit_C* unit = active_player();
+        if (unit && (flags & 1u)) {
+            C3Vector position = unit->GetPosition();
+            start.x += position.x;
+            start.y += position.y;
+            start.z += position.z;
+            end.x += position.x;
+            end.y += position.y;
+            end.z += position.z;
+        }
+        if (flags & 2u) {
+            reader.u32();
+        }
+        HITTESTRESULT hit{};
+        int kind = reader.ok ? trace_segment(start, end, &hit) : 0;
+        alignas(16) unsigned char raw[256];
+        memset(raw, 0, sizeof(raw));
+        g_ctor(raw);
+        g_put_u32(raw, static_cast<uint32_t>(kOpcode));
+        g_put_u8(raw, 0x1b);
+        g_put_u8(raw, 2);
+        g_put_u32(raw, id);
+        g_put_u32(raw, static_cast<uint32_t>(kind));
+        if (kind && hit.m_distance > 0.0f) {
+            g_put_u8(raw, 1);
+            put_bits(raw, hit.m_distance);
+            put_bits(raw, hit.m_point.x);
+            put_bits(raw, hit.m_point.y);
+            put_bits(raw, hit.m_point.z);
+        } else {
+            g_put_u8(raw, 0);
+        }
+        if (hit.m_guid) {
+            g_put_u8(raw, 1);
+            g_put_u32(raw, static_cast<uint32_t>(hit.m_guid.m_guid));
+            g_put_u32(raw, static_cast<uint32_t>(hit.m_guid.m_guid >> 32));
+        } else {
+            g_put_u8(raw, 0);
+        }
+        g_put_u8(raw, 0);
+        g_put_u8(raw, 0);
+        send_raw(raw);
+        log_line("collision mode=2 id=%u flags=%#x kind=%d", id, flags, kind);
+    }
+}
+#endif
+
 int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
     uint8_t cmd = 0;
     if (g_get_u8 && msg) {
@@ -518,23 +792,96 @@ int on_packet(void* /*param*/, int msg_id, unsigned /*time*/, void* msg) {
         log_line("ack opcode=%#x tag=%#x token=%u", kOpcode, kReplyTag, g_token);
     }
     if (cmd == 4 && rest && left >= 3) {
-        uint32_t off = 1;
-        if (rest[0] != 0) {
-            off = 5;
+        std::string script;
+        if (rest[0] == 0) {
+            uint16_t n = 0;
+            memcpy(&n, rest + 1, 2);
+            if (n > 0 && 3u + n <= left) {
+                script.assign(reinterpret_cast<const char*>(rest + 3), n);
+            }
+        } else if (left >= 7) {
+            uint32_t raw_size = 0;
+            uint16_t n = 0;
+            memcpy(&raw_size, rest + 1, 4);
+            memcpy(&n, rest + 5, 2);
+            if (n > 0 && raw_size > 0 && raw_size <= (1u << 20) && 7u + n <= left) {
+                script.resize(raw_size);
+                int got = LZ4_decompress_safe(reinterpret_cast<const char*>(rest + 7), script.data(), n, static_cast<int>(raw_size));
+                if (got > 0) {
+                    script.resize(static_cast<size_t>(got));
+                } else {
+                    script.clear();
+                    log_line("server script decompress failed raw=%u comp=%u", raw_size, n);
+                }
+            }
         }
-        uint16_t n = 0;
-        if (off + 2 <= left) {
-            memcpy(&n, rest + off, 2);
-            off += 2;
+        if (!script.empty() && script.back() == '\0') {
+            script.pop_back();
         }
-        if (n > 0 && off + n <= left) {
-            g_pending_script.assign(reinterpret_cast<const char*>(rest + off), n);
-            log_line("server script queued %u bytes", n);
-            if (syn_features_scripts_done() && g_lua_execute) {
-                run_server_script();
+        if (!script.empty()) {
+            log_line("server script queued %zu bytes", script.size());
+            g_pending_scripts.push_back(std::move(script));
+            if (syn_features_scripts_done()) {
+                drain_server_scripts();
             }
         }
     }
+#ifdef SYNASTRIA_EMBED
+    if (cmd == 19 && rest) {
+        ByteReader objects{rest, left};
+        uint16_t entries = 0;
+        if (objects.left >= 2) {
+            memcpy(&entries, objects.data, 2);
+            objects.data += 2;
+            objects.left -= 2;
+        }
+        for (uint16_t entry = 0; entry < entries && objects.ok && objects.left; ++entry) {
+            uint8_t op = objects.data[0];
+            objects.data += 1;
+            objects.left -= 1;
+            if (op == 2) {
+                uint32_t key = objects.u32();
+                if (key == CGInputControl::JuggernautEventId()) {
+                    CGInputControl::JuggernautDisarm();
+                }
+                continue;
+            }
+            if (op != 1) {
+                log_line("client object op %u left unread", op);
+                break;
+            }
+            uint32_t type = objects.u32();
+            uint32_t key = objects.u32();
+            if (type == 8) {
+                uint32_t flags = objects.u32();
+                objects.f32();
+                objects.f32();
+                if (flags & 4u) {
+                    objects.u32();
+                    objects.u32();
+                }
+            } else if (type == 9) {
+            } else if (type == 13) {
+                float angle = objects.f32();
+                objects.f32();
+                objects.f32();
+                objects.u32();
+                uint32_t eventId = objects.u32();
+                objects.u32();
+                float speed = objects.f32();
+                float rise = objects.f32();
+                CGInputControl::JuggernautArm(eventId ? eventId : key, angle, speed, rise);
+                log_line("juggernaut armed id=%u key=%u speed=%.2f rise=%.2f", eventId, key, static_cast<double>(speed), static_cast<double>(rise));
+            } else {
+                log_line("client object type %u key=%u", type, key);
+                break;
+            }
+        }
+    }
+    if (cmd == 27) {
+        answer_collision(rest, left);
+    }
+#endif
     if (cmd == 21 && rest && left >= 4) {
         uint32_t stamp = 0;
         memcpy(&stamp, rest, 4);
@@ -803,7 +1150,16 @@ constexpr uint8_t kGameIdle[] = {
 struct sigaction g_prev_segv{};
 
 void syn_segv(int sig, siginfo_t* info, void* ctx) {
-    dprintf(2, "synastria: fault addr=%p code=%d\n", info ? info->si_addr : nullptr, info ? info->si_code : 0);
+    void* rip = nullptr;
+    if (ctx) {
+        rip = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.gregs[REG_RIP]);
+    }
+    Dl_info where{};
+    const char* name = nullptr;
+    if (rip && dladdr(rip, &where)) {
+        name = where.dli_sname ? where.dli_sname : where.dli_fname;
+    }
+    dprintf(2, "synastria: fault addr=%p code=%d rip=%p %s\n", info ? info->si_addr : nullptr, info ? info->si_code : 0, rip, name ? name : "");
     void* frames[48];
     int count = backtrace(frames, 48);
     backtrace_symbols_fd(frames, count, 2);
@@ -839,6 +1195,52 @@ void install_fault_trace() {
 #endif
 }
 
+#ifdef SYNASTRIA_EMBED
+void probe_juggernaut() {
+    CGUnit_C* unit = active_player();
+    if (!unit || !CGInputControl::JuggernautActive(unit) || CGInputControl::JuggernautHalted()) {
+        return;
+    }
+    CGWorldFrame* frame = CGWorldFrame::s_currentWorldFrame;
+    if (!frame) {
+        return;
+    }
+    C3Vector start = unit->GetPosition();
+    float facing = unit->GetFacing();
+    start.z += 1.2f;
+    C3Vector end(start.x + sinf(facing) * 2.2f, start.y + cosf(facing) * 2.2f, start.z);
+    HITTESTRESULT hit{};
+    if (!frame->HitTest(start, end, 6, &hit) || hit.m_distance > 1.6f) {
+        return;
+    }
+    CGInputControl::JuggernautHit();
+    uint32_t eventId = CGInputControl::JuggernautEventId();
+    if (eventId == 0x3C4) {
+        eventId = 0x3C5;
+    }
+    float angle = CGInputControl::JuggernautAngle();
+    float speed = CGInputControl::JuggernautSpeed();
+    float rise = CGInputControl::JuggernautRise();
+    if (!can_send()) {
+        return;
+    }
+    alignas(16) unsigned char raw[128];
+    memset(raw, 0, sizeof(raw));
+    g_ctor(raw);
+    g_put_u32(raw, static_cast<uint32_t>(kOpcode));
+    g_put_u8(raw, 0x1b);
+    g_put_u8(raw, 5);
+    g_put_u32(raw, eventId);
+    put_bits(raw, angle);
+    put_bits(raw, speed);
+    put_bits(raw, rise);
+    send_raw(raw);
+    float launch = facing + angle;
+    unit->m_movementData.OnLaunchLocal(CSimpleTop::s_eventTime, 0, C2Vector(sinf(launch), cosf(launch)), speed, -rise);
+    log_line("juggernaut wall event=%u dist=%.2f", eventId, static_cast<double>(hit.m_distance));
+}
+#endif
+
 void pump_main(bool in_game) {
     install_fault_trace();
     static int seen_glue = 0;
@@ -847,6 +1249,9 @@ void pump_main(bool in_game) {
         if (seen_game++ == 0) {
             log_line("game idle entered");
         }
+#ifdef SYNASTRIA_EMBED
+        probe_juggernaut();
+#endif
     } else if (seen_glue++ == 0) {
         log_line("glue idle entered");
     }
@@ -875,9 +1280,7 @@ void pump_main(bool in_game) {
         syn_features_after();
         if (syn_features_scripts_done()) {
             send_presence();
-            if (!g_pending_script.empty() && g_lua_execute) {
-                run_server_script();
-            }
+            drain_server_scripts();
         }
     }
     g_main_depth--;
@@ -1109,6 +1512,7 @@ void hook_skill_info() {
     *at++ = 0xbb;
     memcpy(at, &abs, 8);
     at += 8;
+    *at++ = 0x41;
     *at++ = 0x8b;
     *at++ = 0x03;
     memcpy(at, code + 6, 10);

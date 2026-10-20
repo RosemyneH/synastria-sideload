@@ -3967,6 +3967,32 @@ uint32_t CMovement_C::TraceSurface(uint32_t time, uint32_t elapsed, float distan
                 uint32_t wasStepping = this->m_flags & MOVEMENTFLAG_SPLINE_ELEVATION;
 
                 if (!this->AttemptStepUp(dir2D, normal)) {
+                    if (this->IsOnSpline()) {
+                        this->OnSplineStop(time);
+                    }
+                    // ʕ •ᴥ•ʔ✿ Wall contact sends the juggernaut event and knocks the player back. ✿ ʕ •ᴥ•ʔ
+                    if (this->m_unit->HasAuraBySpellId(80557) && !CGInputControl::JuggernautHalted()) {
+                        CGInputControl::JuggernautHit();
+                        uint32_t eventId = CGInputControl::JuggernautEventId();
+                        if (eventId == 0x3C4) {
+                            eventId = 0x3C5;
+                        }
+                        float angle = CGInputControl::JuggernautAngle();
+                        float speed = CGInputControl::JuggernautSpeed();
+                        float rise = CGInputControl::JuggernautRise();
+                        CDataStore msg;
+                        msg.Put(static_cast<uint32_t>(0x4B8));
+                        msg.Put(static_cast<uint8_t>(0x1B));
+                        msg.Put(static_cast<uint8_t>(0x05));
+                        msg.Put(eventId);
+                        msg.Put(angle);
+                        msg.Put(speed);
+                        msg.Put(rise);
+                        msg.Finalize();
+                        ClientServices::Send2(&msg);
+                        float facing = this->m_unit->GetFacing() + angle;
+                        this->OnLaunchLocal(time, 0, C2Vector(sinf(facing), cosf(facing)), speed, -rise);
+                    }
                     return elapsed;
                 }
 
@@ -4244,7 +4270,6 @@ uint32_t CMovement_C::CollideRequestMove(uint32_t time, uint32_t elapsed, C3Vect
     }
 
     uint32_t consumed = 0;
-    int32_t onSpline = 0;
     uint32_t step;
 
     while (true) {
@@ -4310,18 +4335,14 @@ uint32_t CMovement_C::CollideRequestMove(uint32_t time, uint32_t elapsed, C3Vect
     }
 
     if (this->IsOnSpline()) {
-        this->MoveSplineMoverWithoutCollision(target, time, elapsed);
-        onSpline = 1;
+        this->OnSplineStop(time + consumed);
+        goto done;
     } else {
         this->SkipTime(step);
         this->m_anchorElapsedMs -= step;
     }
 
     consumed = elapsed;
-
-    if (onSpline) {
-        goto done;
-    }
 
 groundNormal:
     if (!this->m_spline || (this->m_spline->m_flags & SPLINEFLAG_NO_SPLINE) || !(this->m_spline->m_flags & SPLINEFLAG_FLYING)) {
@@ -5392,34 +5413,7 @@ int32_t CMovement_C::PlotUnitSplineMovement(uint32_t time, uint32_t elapsed, C3V
         this->m_unit->SetAnimType(static_cast<uint8_t>(this->m_spline->m_flags));
     }
 
-    uint32_t flags = this->m_flags;
-
-    if (!(flags & 0xC0100F)) {
-        return 1;
-    }
-
-    float dx = position->x - this->m_position.x;
-    float dy = position->y - this->m_position.y;
-    float dz = position->z - this->m_position.z;
-    float distSq = dx * dx + dy * dy;
-    float dt = elapsed * 0.001f;
-
-    if (distSq / (dt * dt) <= 3600.0f && dz * dz + distSq <= 9.0f) {
-        return 1;
-    }
-
-    this->m_position = *position;
-
-    if (flags & MOVEMENTFLAG_FALLING) {
-        if (this->IsOnFallingSpline()) {
-            this->m_fallTimeMs = this->m_spline->m_start;
-        } else {
-            this->m_fallStartZ = this->CalcFallStartElevation(this->m_fallTimeMs);
-        }
-    }
-
-    this->ValidateWorldPosition(this->GetPosition(this->m_position));
-    return 0;
+    return 1;
 }
 
 // VERIFY: 1b35a700 manual

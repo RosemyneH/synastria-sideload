@@ -127,6 +127,17 @@ class CGxDeviceVulkan : public CGxDevice {
     VkShaderModule m_postVertex = VK_NULL_HANDLE;
     VkShaderModule m_postFragment = VK_NULL_HANDLE;
     VkSampler m_postSampler = VK_NULL_HANDLE;
+    VkPipeline m_atmosPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_atmosLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_atmosSetLayout = VK_NULL_HANDLE;
+    VkShaderModule m_atmosFragment = VK_NULL_HANDLE;
+    VkSampler m_atmosDepthSampler = VK_NULL_HANDLE;
+    int32_t m_atmosApplied = 0;
+    int32_t m_atmosWorldDraw = 0;
+    C44Matrix m_atmosView;
+    C44Matrix m_atmosProj;
+    float m_atmosNear = 0.2f;
+    float m_atmosFar = 1000.0f;
     VkImageAlloc m_postColor = {};
     VkImageLayout m_postColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkExtent2D m_postExtent = {};
@@ -155,6 +166,7 @@ class CGxDeviceVulkan : public CGxDevice {
     int32_t m_uniformGpuDrawMode = 0;
     int32_t m_uniformSkin = -1;
     int32_t m_uniformDisableTex = -1;
+    int32_t m_uniformDrawKind = 0;
     int32_t m_skinActive = 0;
     int32_t m_skinThisDraw = 0;
     int32_t m_bindPoseMesh = 0;
@@ -219,7 +231,7 @@ class CGxDeviceVulkan : public CGxDevice {
     virtual void GpuSkinMesh(int32_t bindPose);
     virtual int32_t GpuSkinMesh() const;
     virtual void GpuSkinInfluences(uint32_t count);
-    virtual int32_t DrawTerrainBatch(const GxTerrainDraw* draws, uint32_t count);
+    virtual int32_t DrawTerrainBatch(const GxTerrainDraw* draws, uint32_t count, int32_t mode = 2);
     virtual int32_t TerrainBindless();
     virtual uint32_t TerrainTextureSlot(CGxTex* tex);
     virtual uint64_t ResidentHeapBytes() const;
@@ -268,6 +280,7 @@ class CGxDeviceVulkan : public CGxDevice {
     void IReloadExperimentalShaders();
     void ISceneEnd();
     void IApplyPost();
+    void IApplyAtmosphere();
     int32_t IEnsurePost();
     void IReleasePostTargets();
     void IDestroyPost();
